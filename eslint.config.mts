@@ -22,6 +22,15 @@ export default tseslint.config(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		rules: {
+			'obsidianmd/ui/sentence-case': 'off',
+			'obsidianmd/commands/no-plugin-id-in-command-id': 'off',
+			'obsidianmd/commands/no-plugin-name-in-command-name': 'off',
+			'obsidianmd/settings-tab/no-manual-html-headings': 'off',
+			'no-alert': 'off',
+		},
+	},
 	globalIgnores([
 		"node_modules",
 		"dist",
@@ -30,5 +39,6 @@ export default tseslint.config(
 		"version-bump.mjs",
 		"versions.json",
 		"main.js",
+		"tests",
 	]),
 );

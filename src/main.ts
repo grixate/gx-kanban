@@ -1,99 +1,309 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import {
+  MarkdownView,
+  Notice,
+  normalizePath,
+  Plugin,
+  TFile,
+  TFolder,
+  ViewState,
+  WorkspaceLeaf,
+} from 'obsidian';
 
-// Remember to rename these classes and interfaces!
+import { createDefaultBoard } from './model/boardTemplate';
+import { serializeBoardMarkdown } from './model/serialize';
+import { DEFAULT_SETTINGS, KanbanNextSettingTab, KanbanNextSettings } from './settings';
+import { KANBAN_NEXT_ICON, KANBAN_NEXT_VIEW_TYPE, KanbanView } from './view/KanbanView';
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class KanbanNextPlugin extends Plugin {
+  settings: KanbanNextSettings;
 
-	async onload() {
-		await this.loadSettings();
+  async onload(): Promise<void> {
+    await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+    this.registerView(KANBAN_NEXT_VIEW_TYPE, (leaf) => new KanbanView(leaf, this));
+    this.addSettingTab(new KanbanNextSettingTab(this.app, this));
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+    this.addRibbonIcon(KANBAN_NEXT_ICON, 'Create new Kanban board', async () => {
+      await this.createBoard();
+    });
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+    this.registerCommands();
+    this.registerContextMenu();
+    this.registerBoardDefaultOpenBehavior();
+  }
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
+  onunload(): void {
+    super.onunload();
+  }
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+  async loadSettings(): Promise<void> {
+    const loaded = (await this.loadData()) as Partial<KanbanNextSettings> | null;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded || {});
+  }
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+  isKanbanFile(file: TFile): boolean {
+    const cache = this.app.metadataCache.getFileCache(file);
+    return cache?.frontmatter?.kanban === true;
+  }
 
-	}
+  getActiveKanbanView(): KanbanView | null {
+    return this.app.workspace.getActiveViewOfType(KanbanView);
+  }
 
-	onunload() {
-	}
+  async setKanbanView(leaf: WorkspaceLeaf, file: TFile): Promise<void> {
+    if (leaf.view.getViewType() === KANBAN_NEXT_VIEW_TYPE) {
+      return;
+    }
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
+    await leaf.setViewState({
+      type: KANBAN_NEXT_VIEW_TYPE,
+      state: { file: file.path },
+      popstate: true,
+    } as ViewState);
+  }
 
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
+  async setMarkdownView(leaf: WorkspaceLeaf, focus = true): Promise<void> {
+    await leaf.setViewState(
+      {
+        type: 'markdown',
+        state: leaf.view.getState(),
+        popstate: true,
+      } as ViewState,
+      { focus }
+    );
+  }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+  async createBoard(folder?: TFolder): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    const targetFolder = folder || activeFile?.parent || this.app.vault.getRoot();
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+    try {
+      const newPath = this.getNextBoardPath(targetFolder, 'Untitled Kanban Next');
+      const created = await this.app.vault.create(newPath, '');
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
+      const board = createDefaultBoard(created.basename);
+      board.density = this.settings.defaultDensity;
+
+      await this.app.vault.modify(created, serializeBoardMarkdown(board));
+
+      const leaf = this.app.workspace.getLeaf(true);
+      await this.setKanbanView(leaf, created);
+    } catch (error) {
+      console.error('Kanban Next: failed to create board', error);
+      new Notice('Kanban Next could not create a board file. Check console for details.');
+    }
+  }
+
+  async renameBoardFile(file: TFile, desiredTitle: string): Promise<TFile> {
+    const cleanedTitle = this.sanitizeFileBaseName(desiredTitle);
+    if (!cleanedTitle) {
+      throw new Error('Board name cannot be empty.');
+    }
+
+    const parent = file.parent || this.app.vault.getRoot();
+    const targetPath = this.getNextBoardPath(parent, cleanedTitle, file.path);
+
+    if (targetPath === file.path) {
+      return file;
+    }
+
+    await this.app.fileManager.renameFile(file, targetPath);
+
+    const renamed = this.app.vault.getAbstractFileByPath(targetPath);
+    return renamed instanceof TFile ? renamed : file;
+  }
+
+  private registerCommands(): void {
+    this.addCommand({
+      id: 'create-board',
+      name: 'Create board',
+      callback: async () => {
+        await this.createBoard();
+      },
+    });
+
+    this.addCommand({
+      id: 'toggle-board-markdown',
+      name: 'Toggle board/markdown view',
+      checkCallback: (checking) => {
+        const activeKanbanView = this.getActiveKanbanView();
+
+        if (activeKanbanView) {
+          if (checking) {
+            return true;
+          }
+
+          void this.setMarkdownView(activeKanbanView.leaf);
+          return true;
+        }
+
+        const activeMarkdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!activeMarkdownView || !activeMarkdownView.file || !this.isKanbanFile(activeMarkdownView.file)) {
+          return false;
+        }
+
+        if (checking) {
+          return true;
+        }
+
+        void this.setKanbanView(activeMarkdownView.leaf, activeMarkdownView.file);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'add-column',
+      name: 'Add column',
+      checkCallback: (checking) => {
+        const activeKanbanView = this.getActiveKanbanView();
+        if (!activeKanbanView) {
+          return false;
+        }
+
+        if (checking) {
+          return true;
+        }
+
+        void activeKanbanView.promptAddColumn();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'add-card-to-first-column',
+      name: 'Add card to first column',
+      checkCallback: (checking) => {
+        const activeKanbanView = this.getActiveKanbanView();
+        if (!activeKanbanView) {
+          return false;
+        }
+
+        if (checking) {
+          return true;
+        }
+
+        void activeKanbanView.addCardToFirstColumn();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'open-board-settings',
+      name: 'Open board settings',
+      checkCallback: (checking) => {
+        const activeKanbanView = this.getActiveKanbanView();
+        if (!activeKanbanView) {
+          return false;
+        }
+
+        if (checking) {
+          return true;
+        }
+
+        void activeKanbanView.openBoardSettings();
+        return true;
+      },
+    });
+  }
+
+  private registerContextMenu(): void {
+    this.registerEvent(
+      this.app.workspace.on('file-menu', (menu, file, source, leaf) => {
+        if (source === 'link-context-menu') {
+          return;
+        }
+
+        if (file instanceof TFolder) {
+          menu.addItem((item) => {
+            item
+              .setTitle('New Kanban Next board')
+              .setIcon(KANBAN_NEXT_ICON)
+              .setSection('action-primary')
+              .onClick(() => {
+                void this.createBoard(file);
+              });
+          });
+          return;
+        }
+
+        if (file instanceof TFile && this.isKanbanFile(file) && leaf) {
+          menu.addItem((item) => {
+            item
+              .setTitle('Open as Kanban Next board')
+              .setIcon(KANBAN_NEXT_ICON)
+              .setSection('pane')
+              .onClick(() => {
+                void this.setKanbanView(leaf, file);
+              });
+          });
+
+          if (leaf.view instanceof KanbanView) {
+            menu.addItem((item) => {
+              item
+                .setTitle('Open as markdown')
+                .setIcon('file-text')
+                .setSection('pane')
+                .onClick(() => {
+                  void this.setMarkdownView(leaf);
+                });
+            });
+          }
+        }
+      })
+    );
+  }
+
+  private registerBoardDefaultOpenBehavior(): void {
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (!(file instanceof TFile) || !this.isKanbanFile(file)) {
+          return;
+        }
+
+        const activeMarkdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (activeMarkdownView?.file === file) {
+          void this.setKanbanView(activeMarkdownView.leaf, file);
+        }
+      })
+    );
+
+    this.app.workspace.onLayoutReady(() => {
+      this.app.workspace.getLeavesOfType('markdown').forEach((leaf) => {
+        const markdownView = leaf.view as MarkdownView;
+        const file = markdownView.file;
+
+        if (file && this.isKanbanFile(file)) {
+          void this.setKanbanView(leaf, file);
+        }
+      });
+    });
+  }
+
+  private sanitizeFileBaseName(raw: string): string {
+    return raw
+      .replace(/[\\/:*?"<>|]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private getNextBoardPath(folder: TFolder, baseName: string, currentPath?: string): string {
+    const prefix = folder.path ? `${folder.path}/` : '';
+    let index = 0;
+
+    while (true) {
+      const candidateName = index === 0 ? baseName : `${baseName} ${index}`;
+      const candidatePath = normalizePath(`${prefix}${candidateName}.md`);
+      const existing = this.app.vault.getAbstractFileByPath(candidatePath);
+
+      if (!existing || candidatePath === currentPath) {
+        return candidatePath;
+      }
+
+      index += 1;
+    }
+  }
 }

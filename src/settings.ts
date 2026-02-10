@@ -1,36 +1,91 @@
-import {App, PluginSettingTab, Setting} from "obsidian";
-import MyPlugin from "./main";
+import { App, PluginSettingTab, Setting } from 'obsidian';
 
-export interface MyPluginSettings {
-	mySetting: string;
+import KanbanNextPlugin from './main';
+
+export interface KanbanNextSettings {
+  defaultDensity: 'normal' | 'compact';
+  saveDebounceMs: number;
+  saveMaxDelayMs: number;
+  enableNativeEditorFallback: boolean;
 }
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
-}
+export const DEFAULT_SETTINGS: KanbanNextSettings = {
+  defaultDensity: 'normal',
+  saveDebounceMs: 300,
+  saveMaxDelayMs: 1500,
+  enableNativeEditorFallback: true,
+};
 
-export class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+export class KanbanNextSettingTab extends PluginSettingTab {
+  plugin: KanbanNextPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
+  constructor(app: App, plugin: KanbanNextPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
 
-	display(): void {
-		const {containerEl} = this;
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
 
-		containerEl.empty();
+    containerEl.createEl('h2', { text: 'Kanban Next settings' });
 
-		new Setting(containerEl)
-			.setName('Settings #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
+    new Setting(containerEl)
+      .setName('Default density for new boards')
+      .setDesc('Card spacing preset for freshly created boards.')
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption('normal', 'Normal')
+          .addOption('compact', 'Compact')
+          .setValue(this.plugin.settings.defaultDensity)
+          .onChange(async (value) => {
+            this.plugin.settings.defaultDensity = value === 'compact' ? 'compact' : 'normal';
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Save debounce (ms)')
+      .setDesc('Delay before writing queued board changes to disk.')
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.saveDebounceMs))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            if (Number.isNaN(parsed) || parsed < 50) {
+              return;
+            }
+
+            this.plugin.settings.saveDebounceMs = parsed;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Save max delay (ms)')
+      .setDesc('Maximum wait before a queued write is flushed, even during rapid changes.')
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.saveMaxDelayMs))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            if (Number.isNaN(parsed) || parsed < this.plugin.settings.saveDebounceMs) {
+              return;
+            }
+
+            this.plugin.settings.saveMaxDelayMs = parsed;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Allow fallback card editor')
+      .setDesc('When native editor cannot be mounted, use a textarea fallback instead.')
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.enableNativeEditorFallback).onChange(async (value) => {
+          this.plugin.settings.enableNativeEditorFallback = value;
+          await this.plugin.saveSettings();
+        });
+      });
+  }
 }
