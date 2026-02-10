@@ -325,6 +325,11 @@
   cursor: pointer;
 }
 
+.kanban-next-card.is-editing {
+  cursor: text;
+  position: relative;
+}
+
 .is-compact .kanban-next-card {
   padding: 0.35rem;
   gap: 0.25rem;
@@ -334,43 +339,40 @@
   opacity: 0.45;
 }
 
-.kanban-next-card-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.35rem;
-}
-
-.kanban-next-card-title {
-  font-weight: 600;
+.kanban-next-card-body {
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
-.kanban-next-card-preview {
-  color: var(--text-muted);
-  font-size: 0.84rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.kanban-next-tag-row {
-  display: flex;
-  gap: 0.3rem;
-  flex-wrap: wrap;
-}
-
-.kanban-next-tag-chip,
-.kanban-next-due-chip {
-  font-size: 0.75rem;
+.kanban-next-card-editor {
+  width: 100%;
+  min-height: calc(1.4em + 0.9rem + 2px);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 999px;
-  padding: 0.05rem 0.4rem;
-  background: var(--background-secondary-alt);
+  border-radius: 8px;
+  padding: 0.45rem 0.5rem;
+  font: inherit;
+  line-height: 1.4;
+  resize: none;
+  overflow: hidden;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  white-space: pre-wrap;
 }
 
-.kanban-next-due-chip {
-  color: var(--text-accent);
+.kanban-next-card-editor:focus-visible {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.kanban-next-card-counter {
+  position: absolute;
+  right: 0.8rem;
+  bottom: 0.55rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .kanban-next-editor-host {
@@ -397,15 +399,27 @@
 }
 
 .kanban-next-prompt-modal .modal-content {
-  max-width: 460px;
-  width: min(460px, 92vw);
+  max-width: 390px;
+  width: min(390px, calc(100vw - 2rem));
+  padding: 0.85rem 0.95rem;
   margin: 0 auto;
 }
 
 .kanban-next-prompt-content {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.9rem;
+}
+
+.kanban-next-prompt-content h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.kanban-next-prompt-content .kanban-next-prompt-input,
+.kanban-next-prompt-content .kanban-next-prompt-textarea {
+  width: 100%;
+  min-width: 0;
 }
 
 .kanban-next-modal-actions {
@@ -413,7 +427,40 @@
   justify-content: flex-end;
   align-items: center;
   gap: 0.5rem;
-  margin-top: 0.25rem;
+  margin-top: 0.45rem;
+}
+
+.kanban-next-confirm-modal .modal-content {
+  max-width: 420px;
+  width: min(420px, calc(100vw - 2rem));
+  padding: 0.95rem 1rem;
+  margin: 0 auto;
+}
+
+.kanban-next-confirm-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.kanban-next-confirm-content h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.kanban-next-confirm-message {
+  margin: 0;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}
+
+.kanban-next-danger-button {
+  border: 1px solid color-mix(in srgb, var(--color-red) 55%, var(--background-modifier-border));
+}
+
+.kanban-next-danger-button:focus-visible {
+  outline: 2px solid var(--color-red);
+  outline-offset: 2px;
 }
 
 .kanban-next-error {

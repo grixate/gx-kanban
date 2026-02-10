@@ -1,9 +1,10 @@
 import { Menu, Notice, TextFileView, WorkspaceLeaf, setIcon } from 'obsidian';
 
 import KanbanNextPlugin from '../main';
+import { openConfirmModal } from '../modals/ConfirmModal';
 import { promptForMultilineText, promptForText } from '../modals/PromptModal';
 import { openBoardSettingsModal } from '../modals/BoardSettingsModal';
-import { openCardEditorModal } from '../modals/CardEditorModal';
+import { clampEditableCardText, fromEditableCardText, toEditableCardText } from '../model/cardContent';
 import { createDefaultBoard } from '../model/boardTemplate';
 import { normalizeCard } from '../model/card';
 import { parseClipboardList } from '../model/clipboard';
@@ -15,6 +16,7 @@ import { SaveQueue } from '../state/SaveQueue';
 
 export const KANBAN_NEXT_VIEW_TYPE = 'kanban-next-view';
 export const KANBAN_NEXT_ICON = 'lucide-layout-dashboard';
+const CARD_TEXT_MAX_LENGTH = 1000;
 
 interface CardDragState {
   cardId: string;
@@ -23,6 +25,14 @@ interface CardDragState {
 
 interface ColumnDragState {
   sourceColumnId: string;
+}
+
+interface InlineCardEditState {
+  columnId: string;
+  cardId: string;
+  draft: string;
+  original: string;
+  showCounter: boolean;
 }
 
 export class KanbanView extends TextFileView {
@@ -48,6 +58,7 @@ export class KanbanView extends TextFileView {
   private cardDragState: CardDragState | null;
   private columnDragState: ColumnDragState | null;
   private columnDropInsertionIndex: number | null;
+  private editingCard: InlineCardEditState | null;
   private titleEditInProgress: boolean;
   private initialized: boolean;
 
@@ -75,6 +86,7 @@ export class KanbanView extends TextFileView {
     this.cardDragState = null;
     this.columnDragState = null;
     this.columnDropInsertionIndex = null;
+    this.editingCard = null;
     this.titleEditInProgress = false;
     this.initialized = false;
 
@@ -181,6 +193,7 @@ export class KanbanView extends TextFileView {
     this.cardDragState = null;
     this.columnDragState = null;
     this.columnDropInsertionIndex = null;
+    this.editingCard = null;
     this.pendingSavePayload = null;
     this.titleEditInProgress = false;
 
@@ -242,7 +255,7 @@ export class KanbanView extends TextFileView {
     const created = this.createBlankCard();
     this.store.addCard(firstColumn.id, created);
     this.schedulePersist();
-    await this.editCard(firstColumn.id, created.id);
+    this.beginInlineCardEdit(firstColumn.id, created.id, '');
   }
 
   async openBoardSettings(): Promise<void> {
@@ -713,92 +726,161 @@ export class KanbanView extends TextFileView {
       visibleColumn.cards.forEach((card) => {
         const cardEl = cardsEl.createDiv({ cls: 'kanban-next-card' });
         cardEl.dataset.cardId = card.id;
+        const isEditingCard =
+          this.editingCard?.columnId === visibleColumn.id && this.editingCard.cardId === card.id;
 
-        cardEl.draggable = true;
+        cardEl.draggable = !isEditingCard;
 
-        cardEl.addEventListener('dragstart', (event) => {
-          this.cardDragState = {
-            cardId: card.id,
-            sourceColumnId: visibleColumn.id,
+        if (!isEditingCard) {
+          cardEl.addEventListener('dragstart', (event) => {
+            this.cardDragState = {
+              cardId: card.id,
+              sourceColumnId: visibleColumn.id,
+            };
+
+            event.dataTransfer?.setData('text/plain', card.id);
+            if (event.dataTransfer) {
+              event.dataTransfer.effectAllowed = 'move';
+            }
+
+            cardEl.addClass('is-dragging');
+          });
+
+          cardEl.addEventListener('dragend', () => {
+            this.cardDragState = null;
+            cardEl.removeClass('is-dragging');
+            this.clearDropTargetStyles();
+          });
+
+          cardEl.addEventListener('dragover', (event) => {
+            if (!this.cardDragState) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            cardEl.addClass('is-drop-target');
+          });
+
+          cardEl.addEventListener('dragleave', (event) => {
+            const target = event.relatedTarget as Node | null;
+            if (target && cardEl.contains(target)) {
+              return;
+            }
+
+            cardEl.removeClass('is-drop-target');
+          });
+
+          cardEl.addEventListener('drop', (event) => {
+            if (!this.cardDragState) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            cardEl.removeClass('is-drop-target');
+            this.handleCardDrop(visibleColumn.id, card.id);
+          });
+        }
+
+        if (isEditingCard) {
+          cardEl.addClass('is-editing');
+
+          const currentDraft = this.editingCard?.draft || '';
+          const editor = cardEl.createEl('textarea', {
+            cls: 'kanban-next-card-editor',
+          });
+          editor.dataset.cardEditorId = card.id;
+          editor.value = this.clampCardText(currentDraft);
+          editor.maxLength = CARD_TEXT_MAX_LENGTH;
+          editor.rows = Math.max(1, editor.value.split('\n').length);
+          editor.setAttr('aria-label', 'Edit card text');
+          editor.setAttr('placeholder', 'Write card text…');
+          this.syncCardEditorHeight(editor);
+
+          let counterEl: HTMLSpanElement | null = null;
+
+          const ensureCounter = () => {
+            if (!counterEl) {
+              counterEl = cardEl.createSpan({
+                cls: 'kanban-next-card-counter',
+              });
+            }
+            counterEl.setText(`${this.countCharacters(editor.value)}/${CARD_TEXT_MAX_LENGTH}`);
           };
 
-          event.dataTransfer?.setData('text/plain', card.id);
-          if (event.dataTransfer) {
-            event.dataTransfer.effectAllowed = 'move';
+          if (this.editingCard && this.editingCard.showCounter) {
+            ensureCounter();
           }
 
-          cardEl.addClass('is-dragging');
-        });
-
-        cardEl.addEventListener('dragend', () => {
-          this.cardDragState = null;
-          cardEl.removeClass('is-dragging');
-          this.clearDropTargetStyles();
-        });
-
-        cardEl.addEventListener('dragover', (event) => {
-          if (!this.cardDragState) {
-            return;
-          }
-
-          event.preventDefault();
-          event.stopPropagation();
-          cardEl.addClass('is-drop-target');
-        });
-
-        cardEl.addEventListener('dragleave', (event) => {
-          const target = event.relatedTarget as Node | null;
-          if (target && cardEl.contains(target)) {
-            return;
-          }
-
-          cardEl.removeClass('is-drop-target');
-        });
-
-        cardEl.addEventListener('drop', (event) => {
-          if (!this.cardDragState) {
-            return;
-          }
-
-          event.preventDefault();
-          event.stopPropagation();
-          cardEl.removeClass('is-drop-target');
-          this.handleCardDrop(visibleColumn.id, card.id);
-        });
-
-        if (card.dueDate) {
-          const cardTop = cardEl.createDiv({ cls: 'kanban-next-card-top' });
-          cardTop.createSpan({
-            cls: 'kanban-next-due-chip',
-            text: card.dueDate,
+          editor.addEventListener('mousedown', (event) => {
+            event.stopPropagation();
           });
-        }
 
-        cardEl.createDiv({
-          cls: 'kanban-next-card-title',
-          text: card.title,
-        });
+          editor.addEventListener('click', (event) => {
+            event.stopPropagation();
+          });
 
-        if (card.description) {
+          editor.addEventListener('input', () => {
+            if (
+              this.editingCard &&
+              this.editingCard.columnId === visibleColumn.id &&
+              this.editingCard.cardId === card.id
+            ) {
+              const clamped = this.clampCardText(editor.value);
+              if (clamped !== editor.value) {
+                editor.value = clamped;
+              }
+
+              this.editingCard.draft = clamped;
+              this.editingCard.showCounter = true;
+              this.syncCardEditorHeight(editor);
+              ensureCounter();
+            }
+          });
+
+          editor.addEventListener('focus', () => {
+            if (
+              this.editingCard &&
+              this.editingCard.columnId === visibleColumn.id &&
+              this.editingCard.cardId === card.id
+            ) {
+              this.editingCard.showCounter = true;
+              ensureCounter();
+            }
+          });
+
+          editor.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              this.cancelInlineCardEdit();
+              return;
+            }
+
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+              event.preventDefault();
+              this.commitInlineCardEdit();
+            }
+          });
+
+          editor.addEventListener('blur', () => {
+            this.commitInlineCardEdit();
+          });
+        } else {
           cardEl.createDiv({
-            cls: 'kanban-next-card-preview',
-            text: card.description.split('\n')[0] || '',
+            cls: 'kanban-next-card-body',
+            text: toEditableCardText({
+              title: card.title,
+              description: card.description,
+            }),
+          });
+
+          cardEl.addEventListener('click', () => {
+            this.beginInlineCardEdit(visibleColumn.id, card.id);
           });
         }
-
-        if (card.tags.length > 0) {
-          const tagRow = cardEl.createDiv({ cls: 'kanban-next-tag-row' });
-          card.tags.forEach((tag) => {
-            tagRow.createSpan({
-              cls: 'kanban-next-tag-chip',
-              text: tag,
-            });
-          });
-        }
-
-        cardEl.addEventListener('click', () => {
-          void this.editCard(visibleColumn.id, card.id);
-        });
       });
 
       const laneFooter = laneEl.createDiv({ cls: 'kanban-next-lane-footer' });
@@ -809,7 +891,7 @@ export class KanbanView extends TextFileView {
           const created = this.createBlankCard();
           this.store?.addCard(visibleColumn.id, created, 'bottom');
           this.schedulePersist();
-          await this.editCard(visibleColumn.id, created.id);
+          this.beginInlineCardEdit(visibleColumn.id, created.id, '');
         },
         'kanban-next-button kanban-next-lane-add-card'
       );
@@ -823,7 +905,7 @@ export class KanbanView extends TextFileView {
     });
   }
 
-  private async editCard(columnId: string, cardId: string): Promise<void> {
+  private beginInlineCardEdit(columnId: string, cardId: string, initialDraft?: string): void {
     if (!this.store) {
       return;
     }
@@ -833,32 +915,85 @@ export class KanbanView extends TextFileView {
       return;
     }
 
-    const result = await openCardEditorModal(
-      this.app,
-      {
-        title: card.title,
-        description: card.description,
-        dueDate: card.dueDate,
-        checked: card.checked,
-      },
-      {
-        allowFallback: this.plugin.settings.enableNativeEditorFallback,
-      }
-    );
+    const original = toEditableCardText({
+      title: card.title,
+      description: card.description,
+    });
 
-    if (!result) {
+    this.editingCard = {
+      columnId,
+      cardId,
+      draft: this.clampCardText(initialDraft ?? original),
+      original,
+      showCounter: false,
+    };
+
+    this.renderLanes(this.store.getSnapshot());
+
+    window.setTimeout(() => {
+      const editor = this.rootEl?.querySelector(
+        `[data-card-editor-id="${cardId}"]`
+      ) as HTMLTextAreaElement | null;
+      if (!editor) {
+        return;
+      }
+
+      this.syncCardEditorHeight(editor);
+      editor.focus();
+      editor.select();
+    }, 0);
+  }
+
+  private commitInlineCardEdit(): void {
+    if (!this.store || !this.editingCard) {
       return;
     }
 
-    this.store.updateCard(columnId, cardId, (current) => ({
-      ...current,
-      title: result.title,
-      description: result.description,
-      dueDate: result.dueDate,
-      checked: result.checked,
+    const { columnId, cardId, draft } = this.editingCard;
+    const nextContent = fromEditableCardText(draft);
+    const current = this.store.getCard(columnId, cardId);
+
+    this.editingCard = null;
+
+    if (!current) {
+      this.renderLanes(this.store.getSnapshot());
+      return;
+    }
+
+    if (current.title === nextContent.title && current.description === nextContent.description) {
+      this.renderLanes(this.store.getSnapshot());
+      return;
+    }
+
+    this.store.updateCard(columnId, cardId, (card) => ({
+      ...card,
+      title: nextContent.title,
+      description: nextContent.description,
     }));
 
     this.schedulePersist();
+  }
+
+  private cancelInlineCardEdit(): void {
+    if (!this.store || !this.editingCard) {
+      return;
+    }
+
+    this.editingCard = null;
+    this.renderLanes(this.store.getSnapshot());
+  }
+
+  private syncCardEditorHeight(editor: HTMLTextAreaElement): void {
+    editor.setCssProps({ height: '0px' });
+    editor.setCssProps({ height: `${editor.scrollHeight}px` });
+  }
+
+  private countCharacters(value: string): number {
+    return value.length;
+  }
+
+  private clampCardText(value: string): string {
+    return clampEditableCardText(value, CARD_TEXT_MAX_LENGTH);
   }
 
   private async insertFromClipboard(
@@ -977,8 +1112,16 @@ export class KanbanView extends TextFileView {
       item
         .setTitle('Delete column')
         .setIcon('trash-2')
-        .onClick(() => {
-          const confirmed = window.confirm(`Delete column "${columnTitle}" and its cards?`);
+        .onClick(async () => {
+          const cardCount =
+            this.store?.getBoard().columns.find((column) => column.id === columnId)?.cards.length || 0;
+          const confirmed = await openConfirmModal(this.app, {
+            title: 'Delete column',
+            message: `Delete "${columnTitle}" and its ${cardCount} card${cardCount === 1 ? '' : 's'}? This cannot be undone.`,
+            confirmLabel: 'Delete',
+            danger: true,
+          });
+
           if (!confirmed) {
             return;
           }
@@ -1154,7 +1297,7 @@ export class KanbanView extends TextFileView {
   private createBlankCard(): Card {
     return normalizeCard({
       id: createId('card'),
-      title: 'New card',
+      title: 'Untitled',
       description: '',
       checked: false,
       dueDate: null,
