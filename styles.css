@@ -456,6 +456,16 @@ button.kanban-next-column-drag-handle.kanban-next-ghost-icon-button:active {
   pointer-events: none;
 }
 
+.kanban-next-card-shortcut-hint {
+  display: inline-block;
+  margin-top: 0.1rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  color: var(--text-muted);
+  pointer-events: none;
+  user-select: none;
+}
+
 .kanban-next-editor-host {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;

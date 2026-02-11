@@ -1,4 +1,4 @@
-import { Menu, Notice, TextFileView, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
+import { Menu, Notice, TFile, TextFileView, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
 
 import KanbanNextPlugin from '../main';
 import { openConfirmModal } from '../modals/ConfirmModal';
@@ -1289,6 +1289,11 @@ export class KanbanView extends TextFileView {
           editor.setAttr('placeholder', 'Write card text…');
           this.syncCardEditorHeight(editor);
 
+          cardEl.createSpan({
+            cls: 'kanban-next-card-shortcut-hint',
+            text: 'Ctrl+Enter to save',
+          });
+
           let counterEl: HTMLSpanElement | null = null;
 
           const ensureCounter = () => {
@@ -1361,14 +1366,10 @@ export class KanbanView extends TextFileView {
           });
         } else {
           const cardHeader = cardEl.createDiv({ cls: 'kanban-next-card-header' });
-
-          cardHeader.createDiv({
+          const cardBodyEl = cardHeader.createDiv({
             cls: 'kanban-next-card-body',
-            text: toEditableCardText({
-              title: card.title,
-              description: card.description,
-            }),
           });
+          this.renderCardBody(cardBodyEl, toEditableCardText({ title: card.title, description: card.description }));
 
           const cardActions = cardHeader.createDiv({ cls: 'kanban-next-card-actions' });
           const cardMenuButton = this.createIconButton(
@@ -1453,7 +1454,8 @@ export class KanbanView extends TextFileView {
 
       this.syncCardEditorHeight(editor);
       editor.focus();
-      editor.select();
+      const caretPosition = editor.value.length;
+      editor.setSelectionRange(caretPosition, caretPosition);
     }, 0);
   }
 
@@ -1784,16 +1786,17 @@ export class KanbanView extends TextFileView {
 
     try {
       const created = await this.app.vault.create(notePath, noteContent);
-      const noteLink = `[[${created.basename}]]`;
+      const noteLink = this.buildNoteWikiLink(created, 'Note');
 
       if (!context.card.description.includes(noteLink)) {
         this.store.updateCard(columnId, cardId, (card) => ({
           ...card,
-          description: this.appendLine(card.description, noteLink),
+          description: this.appendLineWithSpacing(card.description, noteLink),
         }));
         this.schedulePersist();
       }
 
+      await this.openFileInSidePane(created);
       new Notice(`Created note "${created.basename}".`);
     } catch (error) {
       new Notice(error instanceof Error ? error.message : 'Could not create note from card.');
@@ -1928,6 +1931,78 @@ export class KanbanView extends TextFileView {
     return `[[${this.file.path.replace(/\.md$/i, '')}#^${cardId}]]`;
   }
 
+  private buildNoteWikiLink(file: TFile, alias?: string): string {
+    const pathWithoutExtension = file.path.replace(/\.md$/i, '');
+    if (alias && alias.trim().length > 0) {
+      return `[[${pathWithoutExtension}|${alias.trim()}]]`;
+    }
+
+    return `[[${pathWithoutExtension}]]`;
+  }
+
+  private renderCardBody(container: HTMLElement, text: string): void {
+    container.empty();
+
+    const normalized = text.replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
+
+    lines.forEach((line, lineIndex) => {
+      this.appendCardBodyLine(container, line);
+      if (lineIndex < lines.length - 1) {
+        container.appendChild(document.createTextNode('\n'));
+      }
+    });
+  }
+
+  private appendCardBodyLine(container: HTMLElement, line: string): void {
+    const linkPattern = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+    let lastIndex = 0;
+
+    while (true) {
+      const match = linkPattern.exec(line);
+      if (!match) {
+        break;
+      }
+
+      const fullMatch = match[0] || '';
+      const target = (match[1] || '').trim();
+      const alias = (match[2] || '').trim();
+      const matchStart = match.index;
+
+      if (matchStart > lastIndex) {
+        container.appendChild(document.createTextNode(line.slice(lastIndex, matchStart)));
+      }
+
+      if (!target) {
+        container.appendChild(document.createTextNode(fullMatch));
+      } else {
+        const label = alias || target;
+        const linkEl = container.createEl('a', {
+          cls: 'internal-link',
+          text: label,
+        });
+        linkEl.setAttr('href', target);
+        linkEl.setAttr('data-href', target);
+
+        linkEl.addEventListener('mousedown', (event) => {
+          event.stopPropagation();
+        });
+
+        linkEl.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.app.workspace.openLinkText(target, this.file?.path || '', false);
+        });
+      }
+
+      lastIndex = matchStart + fullMatch.length;
+    }
+
+    if (lastIndex < line.length) {
+      container.appendChild(document.createTextNode(line.slice(lastIndex)));
+    }
+  }
+
   private buildCardNoteContent(card: Card, cardLink: string): string {
     const description = card.description.trim();
     const lines = [`# ${card.title}`, '', `Source: ${cardLink}`, ''];
@@ -1939,9 +2014,14 @@ export class KanbanView extends TextFileView {
     return `${lines.join('\n').trimEnd()}\n`;
   }
 
-  private appendLine(value: string, line: string): string {
+  private appendLineWithSpacing(value: string, line: string): string {
     const trimmed = value.trimEnd();
-    return trimmed ? `${trimmed}\n${line}` : line;
+    return trimmed ? `${trimmed}\n\n${line}` : line;
+  }
+
+  private async openFileInSidePane(file: TFile): Promise<void> {
+    const leaf = this.app.workspace.getLeaf('split', 'vertical');
+    await leaf.openFile(file, { active: true });
   }
 
   private sanitizeNoteBaseName(raw: string): string {

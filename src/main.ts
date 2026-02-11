@@ -8,6 +8,7 @@ import {
   ViewState,
   WorkspaceLeaf,
 } from 'obsidian';
+import { parse as parseYaml } from 'yaml';
 
 import { createDefaultBoard } from './model/boardTemplate';
 import { serializeBoardMarkdown } from './model/serialize';
@@ -61,13 +62,15 @@ export default class KanbanNextPlugin extends Plugin {
 
     try {
       const content = await this.app.vault.cachedRead(file);
-      const frontmatterMatch = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---\n?/);
+      const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+      const frontmatterMatch = normalized.match(/^(?:\s*\n)*---\n([\s\S]*?)\n---(?:\n|$)/);
       if (!frontmatterMatch) {
         return false;
       }
 
       const frontmatterBody = frontmatterMatch[1] || '';
-      return /^kanban:\s*true\s*$/m.test(frontmatterBody);
+      const parsed = parseYaml(frontmatterBody) as unknown;
+      return Boolean(parsed && typeof parsed === 'object' && 'kanban' in parsed && (parsed as { kanban?: unknown }).kanban === true);
     } catch {
       return false;
     }
@@ -312,9 +315,32 @@ export default class KanbanNextPlugin extends Plugin {
   }
 
   private registerBoardDefaultOpenBehavior(): void {
+    const scheduleOpenChecks = (file: TFile | null) => {
+      if (!(file instanceof TFile)) {
+        return;
+      }
+
+      const delays = [0, 60, 180];
+      delays.forEach((delay) => {
+        window.setTimeout(() => {
+          void this.maybeOpenAsKanban(file, this.app.workspace.getMostRecentLeaf() || undefined);
+        }, delay);
+      });
+    };
+
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
-        void this.maybeOpenAsKanban(file, this.app.workspace.getMostRecentLeaf() || undefined);
+        scheduleOpenChecks(file);
+      })
+    );
+
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', (leaf) => {
+        if (!(leaf?.view instanceof MarkdownView)) {
+          return;
+        }
+
+        scheduleOpenChecks(leaf.view.file || null);
       })
     );
 
