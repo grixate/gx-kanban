@@ -69,6 +69,9 @@ export class KanbanView extends TextFileView {
   private cardDropTargetColumnId: string | null;
   private cardDropTargetCardId: string | null;
   private columnDragState: ColumnDragState | null;
+  private columnDragPreviewWidth: number;
+  private columnDragPreviewHeight: number;
+  private columnDropIndicatorEl: HTMLElement | null;
   private columnDropInsertionIndex: number | null;
   private editingCard: InlineCardEditState | null;
   private titleEditInProgress: boolean;
@@ -107,6 +110,9 @@ export class KanbanView extends TextFileView {
     this.cardDropTargetColumnId = null;
     this.cardDropTargetCardId = null;
     this.columnDragState = null;
+    this.columnDragPreviewWidth = 320;
+    this.columnDragPreviewHeight = 240;
+    this.columnDropIndicatorEl = null;
     this.columnDropInsertionIndex = null;
     this.editingCard = null;
     this.titleEditInProgress = false;
@@ -233,6 +239,9 @@ export class KanbanView extends TextFileView {
     this.cardDragPreviewHeight = 64;
     this.clearCardDropIndicator();
     this.columnDragState = null;
+    this.columnDragPreviewWidth = 320;
+    this.columnDragPreviewHeight = 240;
+    this.clearColumnDropIndicator();
     this.columnDropInsertionIndex = null;
     this.editingCard = null;
     this.pendingSavePayload = null;
@@ -587,7 +596,7 @@ export class KanbanView extends TextFileView {
       }
 
       this.columnDropInsertionIndex = preview.insertionIndex;
-      this.setColumnDropIndicator(preview.laneEl, preview.side);
+      this.moveColumnDropIndicator(lanesEl, preview.beforeLaneEl, preview.insertionIndex);
     });
 
     lanesEl.addEventListener('dragleave', (event) => {
@@ -601,7 +610,7 @@ export class KanbanView extends TextFileView {
       }
 
       this.columnDropInsertionIndex = null;
-      this.clearColumnDropIndicators();
+      this.clearColumnDropIndicator();
     });
 
     lanesEl.addEventListener('drop', (event) => {
@@ -638,8 +647,7 @@ export class KanbanView extends TextFileView {
 
   private getColumnDropPreview(pointerClientX: number): {
     insertionIndex: number;
-    laneEl: HTMLElement;
-    side: 'before' | 'after';
+    beforeLaneEl: HTMLElement | null;
   } | null {
     if (this.columnLaneEls.length === 0) {
       return null;
@@ -655,8 +663,7 @@ export class KanbanView extends TextFileView {
     if (pointerClientX <= firstBoundary) {
       return {
         insertionIndex: 0,
-        laneEl: firstLane,
-        side: 'before',
+        beforeLaneEl: firstLane,
       };
     }
 
@@ -670,8 +677,7 @@ export class KanbanView extends TextFileView {
       if (pointerClientX <= rect.left + rect.width / 2) {
         return {
           insertionIndex: index,
-          laneEl: lane,
-          side: 'before',
+          beforeLaneEl: lane,
         };
       }
     }
@@ -683,9 +689,119 @@ export class KanbanView extends TextFileView {
 
     return {
       insertionIndex: this.columnLaneEls.length,
-      laneEl: lastLane,
-      side: 'after',
+      beforeLaneEl: null,
     };
+  }
+
+  private moveColumnDropIndicator(
+    lanesEl: HTMLElement,
+    beforeLaneEl: HTMLElement | null,
+    insertionIndex: number
+  ): void {
+    const indicator = this.ensureColumnDropIndicator();
+    const placementUnchanged =
+      indicator.parentElement === lanesEl &&
+      (beforeLaneEl ? indicator.nextElementSibling === beforeLaneEl : lanesEl.lastElementChild === indicator);
+
+    indicator.style.setProperty(
+      '--kanban-next-drop-column-width',
+      `${Math.max(240, Math.round(this.columnDragPreviewWidth))}px`
+    );
+    indicator.style.setProperty(
+      '--kanban-next-drop-column-height',
+      `${Math.max(180, Math.round(this.columnDragPreviewHeight))}px`
+    );
+
+    if (placementUnchanged) {
+      this.columnDropInsertionIndex = insertionIndex;
+      return;
+    }
+
+    const insertIndicator = () => {
+      if (beforeLaneEl) {
+        lanesEl.insertBefore(indicator, beforeLaneEl);
+      } else {
+        lanesEl.appendChild(indicator);
+      }
+    };
+
+    this.animateLaneReflow(lanesEl, insertIndicator);
+    this.columnDropInsertionIndex = insertionIndex;
+  }
+
+  private ensureColumnDropIndicator(): HTMLElement {
+    if (!this.columnDropIndicatorEl) {
+      this.columnDropIndicatorEl = document.createElement('div');
+      this.columnDropIndicatorEl.addClass('kanban-next-column-drop-indicator');
+    }
+
+    return this.columnDropIndicatorEl;
+  }
+
+  private clearColumnDropIndicator(): void {
+    if (this.lanesEl && this.columnDropIndicatorEl?.parentElement === this.lanesEl) {
+      this.animateLaneReflow(this.lanesEl, () => {
+        this.columnDropIndicatorEl?.remove();
+      });
+    } else {
+      this.columnDropIndicatorEl?.remove();
+    }
+
+    this.columnDropInsertionIndex = null;
+  }
+
+  private animateLaneReflow(lanesEl: HTMLElement, mutate: () => void): void {
+    const lanes = Array.from(lanesEl.querySelectorAll('.kanban-next-lane')).filter(
+      (node): node is HTMLElement => {
+        return node instanceof HTMLElement && !node.hasClass('is-dragging-column');
+      }
+    );
+
+    const beforeLeft = new Map<HTMLElement, number>();
+    lanes.forEach((lane) => beforeLeft.set(lane, lane.getBoundingClientRect().left));
+
+    mutate();
+
+    const shifted: Array<{ lane: HTMLElement; delta: number }> = [];
+    lanes.forEach((lane) => {
+      const prev = beforeLeft.get(lane);
+      if (typeof prev !== 'number') {
+        return;
+      }
+
+      const next = lane.getBoundingClientRect().left;
+      const delta = prev - next;
+      if (Math.abs(delta) < 0.5) {
+        return;
+      }
+
+      shifted.push({ lane, delta });
+      lane.setCssProps({
+        transition: 'none',
+        transform: `translateX(${delta}px)`,
+      });
+    });
+
+    if (shifted.length === 0) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      shifted.forEach(({ lane }) => {
+        lane.setCssProps({
+          transition: 'transform 130ms ease',
+          transform: '',
+        });
+      });
+
+      window.setTimeout(() => {
+        shifted.forEach(({ lane }) => {
+          lane.setCssProps({
+            transition: '',
+          });
+        });
+      }, 170);
+    });
   }
 
   private moveCardDropIndicator(
@@ -939,10 +1055,14 @@ export class KanbanView extends TextFileView {
       dragHandle.draggable = true;
       dragHandle.addEventListener('dragstart', (event) => {
         this.clearCardDropIndicator();
+        this.clearColumnDropIndicator();
         this.columnDragState = {
           sourceColumnId: visibleColumn.id,
         };
         this.columnDropInsertionIndex = null;
+        const laneRect = laneEl.getBoundingClientRect();
+        this.columnDragPreviewWidth = laneRect.width;
+        this.columnDragPreviewHeight = laneRect.height;
 
         event.dataTransfer?.setData('text/plain', visibleColumn.id);
         if (event.dataTransfer) {
@@ -956,7 +1076,9 @@ export class KanbanView extends TextFileView {
 
       dragHandle.addEventListener('dragend', () => {
         this.columnDragState = null;
-        this.columnDropInsertionIndex = null;
+        this.columnDragPreviewWidth = 320;
+        this.columnDragPreviewHeight = 240;
+        this.clearColumnDropIndicator();
         this.clearDropTargetStyles();
         this.lanesEl?.removeClass('is-column-dragging');
         laneEl.removeClass('is-dragging-column');
@@ -1845,19 +1967,6 @@ export class KanbanView extends TextFileView {
     }
   }
 
-  private setColumnDropIndicator(laneEl: HTMLElement, side: 'before' | 'after'): void {
-    this.clearColumnDropIndicators();
-
-    laneEl.addClass(side === 'before' ? 'is-column-drop-before' : 'is-column-drop-after');
-  }
-
-  private clearColumnDropIndicators(): void {
-    this.rootEl?.querySelectorAll('.is-column-drop-before, .is-column-drop-after').forEach((node) => {
-      node.removeClass('is-column-drop-before');
-      node.removeClass('is-column-drop-after');
-    });
-  }
-
   private handleCardDrop(targetColumnId: string, targetCardId: string | null): void {
     if (!this.store || !this.cardDragState) {
       return;
@@ -1898,6 +2007,8 @@ export class KanbanView extends TextFileView {
     );
 
     if (sourceIndex < 0) {
+      this.columnDragState = null;
+      this.clearDropTargetStyles();
       return;
     }
 
@@ -2022,15 +2133,8 @@ export class KanbanView extends TextFileView {
   }
 
   private clearDropTargetStyles(): void {
-    this.rootEl
-      ?.querySelectorAll(
-        '.is-drop-target, .is-column-drop-before, .is-column-drop-after'
-      )
-      .forEach((node) => {
-      node.removeClass('is-drop-target');
-      node.removeClass('is-column-drop-before');
-      node.removeClass('is-column-drop-after');
-    });
+    this.lanesEl?.removeClass('is-column-dragging');
+    this.clearColumnDropIndicator();
     this.clearCardDropIndicator();
   }
 
