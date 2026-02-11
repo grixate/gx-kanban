@@ -200,9 +200,31 @@ export class BoardStore {
     cards: Card[],
     position: 'before' | 'after'
   ): number {
+    const column = this.board.columns.find((entry) => entry.id === columnId);
+    if (!column) {
+      return 0;
+    }
+
+    const targetIndex = position === 'before' ? 0 : column.cards.length;
+    return this.insertCardsAt(columnId, targetIndex, cards);
+  }
+
+  insertCardsAt(columnId: string, targetIndex: number, cards: Card[]): number {
     if (cards.length === 0) {
       return 0;
     }
+
+    const normalizedCards = cards.map((card) =>
+      normalizeCard({
+        id: card.id,
+        title: card.title,
+        description: card.description,
+        checked: card.checked,
+        dueDate: card.dueDate,
+      })
+    );
+
+    let inserted = 0;
 
     this.board = {
       ...this.board,
@@ -211,15 +233,24 @@ export class BoardStore {
           return column;
         }
 
+        const nextCards = [...column.cards];
+        const insertIndex = Math.max(0, Math.min(targetIndex, nextCards.length));
+        nextCards.splice(insertIndex, 0, ...normalizedCards);
+        inserted = normalizedCards.length;
+
         return {
           ...column,
-          cards: position === 'before' ? [...cards, ...column.cards] : [...column.cards, ...cards],
+          cards: nextCards,
         };
       }),
     };
 
+    if (inserted === 0) {
+      return 0;
+    }
+
     this.emit();
-    return cards.length;
+    return inserted;
   }
 
   getCard(columnId: string, cardId: string): Card | null {
@@ -378,11 +409,11 @@ export class BoardStore {
     nextSourceColumn.cards.splice(cardIndex, 1);
 
     const targetCards = nextTargetColumn.cards;
-    let insertIndex = Math.max(0, Math.min(targetIndex, targetCards.length));
-
+    let insertIndex = targetIndex;
     if (sourceColumnId === targetColumnId && cardIndex < insertIndex) {
       insertIndex -= 1;
     }
+    insertIndex = Math.max(0, Math.min(insertIndex, targetCards.length));
 
     targetCards.splice(insertIndex, 0, card);
 

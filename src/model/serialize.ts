@@ -34,7 +34,10 @@ function serializeCard(card: Card): string[] {
     dueDate: normalizeDueDate(card.dueDate),
   });
 
-  const lines = [`- [${normalized.checked ? 'x' : ' '}] [${normalized.id}] ${normalized.title}`];
+  const lines = [
+    `- [${normalized.checked ? 'x' : ' '}] [${normalized.id}] ${normalized.title}`,
+    `  ^${normalized.id}`,
+  ];
   const descriptionChunks: string[] = [];
 
   if (normalized.description.trim().length > 0) {

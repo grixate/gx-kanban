@@ -8,6 +8,7 @@ import { BoardDocument, Card, CardDensity, Column, ColumnDefinition } from './ty
 const headingRegex = /^##\s+\[([^\]]+)]\s+(.+?)\s*$/;
 const cardRegex = /^-\s+\[([ xX])]\s+\[([^\]]+)]\s*(.*)$/;
 const dueLineRegex = /^due::\s*(\d{4}-\d{2}-\d{2})\s*$/;
+const blockAnchorRegex = /^\^[A-Za-z0-9/_-]+\s*$/;
 const archiveBlockRegex =
   /%%\s*kanban-next:archive:start\s*%%\n?([\s\S]*?)\n?%%\s*kanban-next:archive:end\s*%%/m;
 
@@ -121,6 +122,10 @@ function normalizeDescription(rawLines: string[]): { description: string; dueDat
   const bodyLines: string[] = [];
 
   for (const line of lines) {
+    if (line.trim().match(blockAnchorRegex)) {
+      continue;
+    }
+
     const dueMatch = line.trim().match(dueLineRegex);
     if (!dueDate && dueMatch) {
       dueDate = normalizeDueDate(dueMatch[1] || '');

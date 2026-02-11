@@ -50,6 +50,29 @@ export default class KanbanNextPlugin extends Plugin {
     return cache?.frontmatter?.kanban === true;
   }
 
+  private async isKanbanFileWithFallback(file: TFile): Promise<boolean> {
+    if (this.isKanbanFile(file)) {
+      return true;
+    }
+
+    if (file.extension.toLowerCase() !== 'md') {
+      return false;
+    }
+
+    try {
+      const content = await this.app.vault.cachedRead(file);
+      const frontmatterMatch = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---\n?/);
+      if (!frontmatterMatch) {
+        return false;
+      }
+
+      const frontmatterBody = frontmatterMatch[1] || '';
+      return /^kanban:\s*true\s*$/m.test(frontmatterBody);
+    } catch {
+      return false;
+    }
+  }
+
   getActiveKanbanView(): KanbanView | null {
     return this.app.workspace.getActiveViewOfType(KanbanView);
   }
@@ -257,28 +280,53 @@ export default class KanbanNextPlugin extends Plugin {
     );
   }
 
+  private async maybeOpenAsKanban(file: TFile | null, preferredLeaf?: WorkspaceLeaf): Promise<void> {
+    if (!(file instanceof TFile)) {
+      return;
+    }
+
+    if (!(await this.isKanbanFileWithFallback(file))) {
+      return;
+    }
+
+    if (preferredLeaf?.view instanceof MarkdownView) {
+      const markdownView = preferredLeaf.view;
+      if (markdownView.file === file) {
+        await this.setKanbanView(preferredLeaf, file);
+        return;
+      }
+    }
+
+    const matchingMarkdownLeaves = this.app.workspace.getLeavesOfType('markdown').filter((leaf) => {
+      if (!(leaf.view instanceof MarkdownView)) {
+        return false;
+      }
+
+      const markdownView = leaf.view;
+      return markdownView.file === file;
+    });
+
+    for (const leaf of matchingMarkdownLeaves) {
+      await this.setKanbanView(leaf, file);
+    }
+  }
+
   private registerBoardDefaultOpenBehavior(): void {
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
-        if (!(file instanceof TFile) || !this.isKanbanFile(file)) {
-          return;
-        }
-
-        const activeMarkdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (activeMarkdownView?.file === file) {
-          void this.setKanbanView(activeMarkdownView.leaf, file);
-        }
+        void this.maybeOpenAsKanban(file, this.app.workspace.getMostRecentLeaf() || undefined);
       })
     );
 
     this.app.workspace.onLayoutReady(() => {
       this.app.workspace.getLeavesOfType('markdown').forEach((leaf) => {
-        const markdownView = leaf.view as MarkdownView;
-        const file = markdownView.file;
-
-        if (file && this.isKanbanFile(file)) {
-          void this.setKanbanView(leaf, file);
+        if (!(leaf.view instanceof MarkdownView)) {
+          return;
         }
+
+        const file = leaf.view.file;
+
+        void this.maybeOpenAsKanban(file || null, leaf);
       });
     });
   }

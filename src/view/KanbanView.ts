@@ -1,4 +1,4 @@
-import { Menu, Notice, TextFileView, WorkspaceLeaf, setIcon } from 'obsidian';
+import { Menu, Notice, TextFileView, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
 
 import KanbanNextPlugin from '../main';
 import { openConfirmModal } from '../modals/ConfirmModal';
@@ -35,6 +35,8 @@ interface InlineCardEditState {
   showCounter: boolean;
 }
 
+type ActivePopover = 'search' | 'filter';
+
 export class KanbanView extends TextFileView {
   private plugin: KanbanNextPlugin;
   private rootEl: HTMLElement | null;
@@ -49,6 +51,12 @@ export class KanbanView extends TextFileView {
   private tagInputEl: HTMLInputElement | null;
   private tagDatalistEl: HTMLElement | null;
   private tagOptionsCacheKey: string;
+  private columnLaneEls: HTMLElement[];
+  private activePopover: ActivePopover | null;
+  private searchPopoverEl: HTMLElement | null;
+  private filterPopoverEl: HTMLElement | null;
+  private searchPopoverButtonEl: HTMLButtonElement | null;
+  private filterPopoverButtonEl: HTMLButtonElement | null;
 
   private store: BoardStore | null;
   private unsubscribeStore: (() => void) | null;
@@ -56,6 +64,10 @@ export class KanbanView extends TextFileView {
   private pendingSavePayload: string | null;
 
   private cardDragState: CardDragState | null;
+  private cardDragPreviewHeight: number;
+  private cardDropIndicatorEl: HTMLElement | null;
+  private cardDropTargetColumnId: string | null;
+  private cardDropTargetCardId: string | null;
   private columnDragState: ColumnDragState | null;
   private columnDropInsertionIndex: number | null;
   private editingCard: InlineCardEditState | null;
@@ -78,12 +90,22 @@ export class KanbanView extends TextFileView {
     this.tagInputEl = null;
     this.tagDatalistEl = null;
     this.tagOptionsCacheKey = '';
+    this.columnLaneEls = [];
+    this.activePopover = null;
+    this.searchPopoverEl = null;
+    this.filterPopoverEl = null;
+    this.searchPopoverButtonEl = null;
+    this.filterPopoverButtonEl = null;
 
     this.store = null;
     this.unsubscribeStore = null;
 
     this.pendingSavePayload = null;
     this.cardDragState = null;
+    this.cardDragPreviewHeight = 64;
+    this.cardDropIndicatorEl = null;
+    this.cardDropTargetColumnId = null;
+    this.cardDropTargetCardId = null;
     this.columnDragState = null;
     this.columnDropInsertionIndex = null;
     this.editingCard = null;
@@ -170,6 +192,23 @@ export class KanbanView extends TextFileView {
   async onOpen(): Promise<void> {
     this.rootEl = this.contentEl.createDiv({ cls: 'kanban-next-root-host' });
 
+    this.registerDomEvent(document, 'mousedown', (event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (!this.rootEl?.contains(target)) {
+        this.setActivePopover(null);
+      }
+    });
+
+    this.registerDomEvent(document, 'keydown', (event) => {
+      if (event.key === 'Escape') {
+        this.setActivePopover(null);
+      }
+    });
+
     this.registerEvent(
       this.app.vault.on('rename', (file) => {
         if (file !== this.file || !this.store) {
@@ -191,6 +230,8 @@ export class KanbanView extends TextFileView {
 
     this.store = null;
     this.cardDragState = null;
+    this.cardDragPreviewHeight = 64;
+    this.clearCardDropIndicator();
     this.columnDragState = null;
     this.columnDropInsertionIndex = null;
     this.editingCard = null;
@@ -200,6 +241,7 @@ export class KanbanView extends TextFileView {
     this.saveQueue.destroy();
 
     this.boardEl = null;
+    this.lanesEl?.removeClass('is-column-dragging');
     this.lanesEl = null;
     this.boardTitleTextEl = null;
     this.boardTitleInputEl = null;
@@ -208,6 +250,12 @@ export class KanbanView extends TextFileView {
     this.tagInputEl = null;
     this.tagDatalistEl = null;
     this.tagOptionsCacheKey = '';
+    this.columnLaneEls = [];
+    this.activePopover = null;
+    this.searchPopoverEl = null;
+    this.filterPopoverEl = null;
+    this.searchPopoverButtonEl = null;
+    this.filterPopoverButtonEl = null;
 
     if (this.rootEl) {
       this.rootEl.empty();
@@ -393,41 +441,86 @@ export class KanbanView extends TextFileView {
       cls: 'kanban-next-description is-hidden',
     });
 
-    const actionEl = headerEl.createDiv({ cls: 'kanban-next-header-actions' });
-    this.createButton(actionEl, 'Add column', async () => this.promptAddColumn());
-    this.createButton(actionEl, 'Settings', async () => this.openBoardSettings());
+    const toolbarEl = headerEl.createDiv({ cls: 'kanban-next-toolbar' });
 
-    const filtersEl = boardEl.createDiv({ cls: 'kanban-next-filters' });
+    const searchControlEl = toolbarEl.createDiv({ cls: 'kanban-next-toolbar-control' });
+    const searchButton = this.createIconButton(
+      searchControlEl,
+      'search',
+      'Search cards',
+      () => {
+        this.togglePopover('search');
+      },
+      'kanban-next-icon-button kanban-next-plain-icon-button'
+    );
 
-    const queryInput = filtersEl.createEl('input', {
+    const searchPopover = searchControlEl.createDiv({ cls: 'kanban-next-toolbar-popover' });
+
+    const queryInput = searchPopover.createEl('input', {
       type: 'text',
       cls: 'kanban-next-filter-input',
-      placeholder: 'Search cards',
+      placeholder: 'Search cards…',
     });
+    queryInput.setAttr('aria-label', 'Search cards');
 
     queryInput.addEventListener('input', () => {
       this.store?.setFilterQuery(queryInput.value);
     });
 
-    const tagInput = filtersEl.createEl('input', {
+    const filterControlEl = toolbarEl.createDiv({ cls: 'kanban-next-toolbar-control' });
+    const filterButton = this.createIconButton(
+      filterControlEl,
+      'list-filter',
+      'Filter cards',
+      () => {
+        this.togglePopover('filter');
+      },
+      'kanban-next-icon-button kanban-next-plain-icon-button'
+    );
+
+    const filterPopover = filterControlEl.createDiv({ cls: 'kanban-next-toolbar-popover' });
+
+    const tagInput = filterPopover.createEl('input', {
       type: 'text',
       cls: 'kanban-next-filter-input',
-      placeholder: 'Filter by tag (#tag)',
+      placeholder: 'Filter by tag (#tag)…',
     });
+    tagInput.setAttr('aria-label', 'Filter cards by tag');
 
     const datalistId = `kanban-next-tags-${this.file?.path.replace(/[^A-Za-z0-9]/g, '-') || 'board'}`;
     tagInput.setAttribute('list', datalistId);
 
-    const datalist = filtersEl.createEl('datalist');
+    const datalist = filterPopover.createEl('datalist');
     datalist.id = datalistId;
 
     tagInput.addEventListener('input', () => {
       this.store?.setFilterTag(tagInput.value);
     });
 
-    this.createButton(filtersEl, 'Clear filters', () => this.store?.clearFilter());
+    this.createButton(
+      filterPopover,
+      'Clear filters',
+      () => this.store?.clearFilter(),
+      'kanban-next-button kanban-next-popover-clear-button'
+    );
+
+    this.createIconButton(
+      toolbarEl,
+      'plus-circle',
+      'Add column',
+      async () => this.promptAddColumn(),
+      'kanban-next-icon-button kanban-next-plain-icon-button'
+    );
+    this.createIconButton(
+      toolbarEl,
+      'settings',
+      'Board settings',
+      async () => this.openBoardSettings(),
+      'kanban-next-icon-button kanban-next-plain-icon-button'
+    );
 
     const lanesEl = boardEl.createDiv({ cls: 'kanban-next-lane-scroller' });
+    this.registerColumnDragListeners(lanesEl);
 
     this.boardTitleTextEl = titleLabel;
     this.boardTitleInputEl = titleInput;
@@ -436,7 +529,308 @@ export class KanbanView extends TextFileView {
     this.queryInputEl = queryInput;
     this.tagInputEl = tagInput;
     this.tagDatalistEl = datalist;
+    this.searchPopoverEl = searchPopover;
+    this.filterPopoverEl = filterPopover;
+    this.searchPopoverButtonEl = searchButton;
+    this.filterPopoverButtonEl = filterButton;
     this.lanesEl = lanesEl;
+
+    this.setActivePopover(null);
+  }
+
+  private togglePopover(popover: ActivePopover): void {
+    this.setActivePopover(this.activePopover === popover ? null : popover);
+  }
+
+  private setActivePopover(popover: ActivePopover | null): void {
+    this.activePopover = popover;
+
+    const searchOpen = popover === 'search';
+    const filterOpen = popover === 'filter';
+
+    if (this.searchPopoverEl) {
+      this.searchPopoverEl.toggleClass('is-open', searchOpen);
+    }
+
+    if (this.filterPopoverEl) {
+      this.filterPopoverEl.toggleClass('is-open', filterOpen);
+    }
+
+    this.searchPopoverButtonEl?.toggleClass('is-active', searchOpen);
+    this.filterPopoverButtonEl?.toggleClass('is-active', filterOpen);
+
+    if (searchOpen && this.queryInputEl) {
+      window.setTimeout(() => this.queryInputEl?.focus(), 0);
+    }
+
+    if (filterOpen && this.tagInputEl) {
+      window.setTimeout(() => this.tagInputEl?.focus(), 0);
+    }
+  }
+
+  private registerColumnDragListeners(lanesEl: HTMLElement): void {
+    lanesEl.addEventListener('dragover', (event) => {
+      if (!this.columnDragState) {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'move';
+      }
+
+      this.maybeAutoScrollLanes(event.clientX);
+
+      const preview = this.getColumnDropPreview(event.clientX);
+      if (!preview) {
+        return;
+      }
+
+      this.columnDropInsertionIndex = preview.insertionIndex;
+      this.setColumnDropIndicator(preview.laneEl, preview.side);
+    });
+
+    lanesEl.addEventListener('dragleave', (event) => {
+      if (!this.columnDragState) {
+        return;
+      }
+
+      const target = event.relatedTarget as Node | null;
+      if (target && lanesEl.contains(target)) {
+        return;
+      }
+
+      this.columnDropInsertionIndex = null;
+      this.clearColumnDropIndicators();
+    });
+
+    lanesEl.addEventListener('drop', (event) => {
+      if (!this.columnDragState) {
+        return;
+      }
+
+      event.preventDefault();
+      const preview = this.getColumnDropPreview(event.clientX);
+      const insertionIndex =
+        this.columnDropInsertionIndex ?? preview?.insertionIndex ?? this.columnLaneEls.length;
+      this.handleColumnDrop(insertionIndex);
+    });
+  }
+
+  private maybeAutoScrollLanes(pointerClientX: number): void {
+    if (!this.lanesEl) {
+      return;
+    }
+
+    const rect = this.lanesEl.getBoundingClientRect();
+    const edgeThreshold = 56;
+    const step = 18;
+
+    if (pointerClientX <= rect.left + edgeThreshold) {
+      this.lanesEl.scrollLeft -= step;
+      return;
+    }
+
+    if (pointerClientX >= rect.right - edgeThreshold) {
+      this.lanesEl.scrollLeft += step;
+    }
+  }
+
+  private getColumnDropPreview(pointerClientX: number): {
+    insertionIndex: number;
+    laneEl: HTMLElement;
+    side: 'before' | 'after';
+  } | null {
+    if (this.columnLaneEls.length === 0) {
+      return null;
+    }
+
+    const firstLane = this.columnLaneEls[0];
+    if (!firstLane) {
+      return null;
+    }
+
+    const firstRect = firstLane.getBoundingClientRect();
+    const firstBoundary = firstRect.left + firstRect.width * 0.72;
+    if (pointerClientX <= firstBoundary) {
+      return {
+        insertionIndex: 0,
+        laneEl: firstLane,
+        side: 'before',
+      };
+    }
+
+    for (let index = 1; index < this.columnLaneEls.length; index += 1) {
+      const lane = this.columnLaneEls[index];
+      if (!lane) {
+        continue;
+      }
+
+      const rect = lane.getBoundingClientRect();
+      if (pointerClientX <= rect.left + rect.width / 2) {
+        return {
+          insertionIndex: index,
+          laneEl: lane,
+          side: 'before',
+        };
+      }
+    }
+
+    const lastLane = this.columnLaneEls[this.columnLaneEls.length - 1];
+    if (!lastLane) {
+      return null;
+    }
+
+    return {
+      insertionIndex: this.columnLaneEls.length,
+      laneEl: lastLane,
+      side: 'after',
+    };
+  }
+
+  private moveCardDropIndicator(
+    cardsEl: HTMLElement,
+    columnId: string,
+    beforeCardEl: HTMLElement | null
+  ): void {
+    const indicator = this.ensureCardDropIndicator();
+    const placementUnchanged =
+      indicator.parentElement === cardsEl &&
+      (beforeCardEl
+        ? indicator.nextElementSibling === beforeCardEl
+        : cardsEl.lastElementChild === indicator);
+
+    indicator.style.setProperty(
+      '--kanban-next-drop-card-height',
+      `${Math.max(40, Math.round(this.cardDragPreviewHeight))}px`
+    );
+
+    if (!placementUnchanged) {
+      const oldParent = indicator.parentElement;
+      const insertIndicator = () => {
+        if (beforeCardEl) {
+          cardsEl.insertBefore(indicator, beforeCardEl);
+        } else {
+          cardsEl.appendChild(indicator);
+        }
+      };
+
+      if (oldParent && oldParent !== cardsEl) {
+        this.animateCardReflow(oldParent, () => {
+          indicator.remove();
+        });
+        this.animateCardReflow(cardsEl, insertIndicator);
+      } else {
+        this.animateCardReflow(cardsEl, insertIndicator);
+      }
+    }
+
+    this.cardDropTargetColumnId = columnId;
+    this.cardDropTargetCardId = beforeCardEl?.dataset.cardId || null;
+  }
+
+  private ensureCardDropIndicator(): HTMLElement {
+    if (!this.cardDropIndicatorEl) {
+      this.cardDropIndicatorEl = document.createElement('div');
+      this.cardDropIndicatorEl.addClass('kanban-next-card-drop-indicator');
+    }
+
+    return this.cardDropIndicatorEl;
+  }
+
+  private clearCardDropIndicator(): void {
+    const oldParent = this.cardDropIndicatorEl?.parentElement;
+    if (oldParent && this.cardDropIndicatorEl) {
+      this.animateCardReflow(oldParent, () => {
+        this.cardDropIndicatorEl?.remove();
+      });
+    } else {
+      this.cardDropIndicatorEl?.remove();
+    }
+
+    this.cardDropTargetColumnId = null;
+    this.cardDropTargetCardId = null;
+  }
+
+  private updateCardDropIndicatorFromPointer(
+    cardsEl: HTMLElement,
+    columnId: string,
+    pointerClientY: number
+  ): void {
+    const beforeCardEl = this.getCardDropBeforeElement(cardsEl, pointerClientY);
+    this.moveCardDropIndicator(cardsEl, columnId, beforeCardEl);
+  }
+
+  private getCardDropBeforeElement(cardsEl: HTMLElement, pointerClientY: number): HTMLElement | null {
+    const cards = Array.from(cardsEl.querySelectorAll('.kanban-next-card')).filter(
+      (node): node is HTMLElement => {
+        return node instanceof HTMLElement && !node.hasClass('is-dragging');
+      }
+    );
+
+    for (const cardEl of cards) {
+      const rect = cardEl.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      if (pointerClientY < midpoint) {
+        return cardEl;
+      }
+    }
+
+    return null;
+  }
+
+  private animateCardReflow(cardsEl: HTMLElement, mutate: () => void): void {
+    const cards = Array.from(cardsEl.querySelectorAll('.kanban-next-card')).filter(
+      (node): node is HTMLElement => {
+        return node instanceof HTMLElement && !node.hasClass('is-dragging');
+      }
+    );
+
+    const beforeTop = new Map<HTMLElement, number>();
+    cards.forEach((card) => beforeTop.set(card, card.getBoundingClientRect().top));
+
+    mutate();
+
+    const shifted: Array<{ card: HTMLElement; delta: number }> = [];
+    cards.forEach((card) => {
+      const prev = beforeTop.get(card);
+      if (typeof prev !== 'number') {
+        return;
+      }
+
+      const next = card.getBoundingClientRect().top;
+      const delta = prev - next;
+      if (Math.abs(delta) < 0.5) {
+        return;
+      }
+
+      shifted.push({ card, delta });
+      card.setCssProps({
+        transition: 'none',
+        transform: `translateY(${delta}px)`,
+      });
+    });
+
+    if (shifted.length === 0) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      shifted.forEach(({ card }) => {
+        card.setCssProps({
+          transition: 'transform 120ms ease',
+          transform: '',
+        });
+      });
+
+      window.setTimeout(() => {
+        shifted.forEach(({ card }) => {
+          card.setCssProps({
+            transition: '',
+          });
+        });
+      }, 150);
+    });
   }
 
   private refreshTagDatalist(tags: string[]): void {
@@ -465,6 +859,7 @@ export class KanbanView extends TextFileView {
     }
 
     this.lanesEl.empty();
+    this.columnLaneEls = [];
 
     const board = snapshot.board;
     const visibleColumns = snapshot.visibleColumns;
@@ -476,7 +871,7 @@ export class KanbanView extends TextFileView {
       return;
     }
 
-    visibleColumns.forEach((visibleColumn, visibleIndex) => {
+    visibleColumns.forEach((visibleColumn) => {
       const fullColumn = board.columns.find((column) => column.id === visibleColumn.id);
       const fullCount = fullColumn?.cards.length || 0;
 
@@ -484,6 +879,7 @@ export class KanbanView extends TextFileView {
       if (!laneEl) {
         return;
       }
+      this.columnLaneEls.push(laneEl);
 
       if (visibleColumn.cards.length === 0) {
         laneEl.addClass('is-empty');
@@ -492,20 +888,9 @@ export class KanbanView extends TextFileView {
       laneEl.dataset.columnId = visibleColumn.id;
 
       laneEl.addEventListener('dragover', (event) => {
-        if (this.columnDragState) {
-          event.preventDefault();
-          const insertionIndex = this.getColumnInsertionIndex(laneEl, visibleIndex, event.clientX);
-          this.columnDropInsertionIndex = insertionIndex;
-          this.setColumnDropIndicator(
-            laneEl,
-            insertionIndex <= visibleIndex ? 'before' : 'after'
-          );
-          return;
-        }
-
         if (this.cardDragState) {
           event.preventDefault();
-          laneEl.addClass('is-drop-target');
+          this.updateCardDropIndicatorFromPointer(cardsEl, visibleColumn.id, event.clientY);
         }
       });
 
@@ -514,34 +899,28 @@ export class KanbanView extends TextFileView {
         if (target && laneEl.contains(target)) {
           return;
         }
-
-        laneEl.removeClass('is-drop-target');
-        laneEl.removeClass('is-column-drop-before');
-        laneEl.removeClass('is-column-drop-after');
+        this.clearCardDropIndicator();
       });
 
       laneEl.addEventListener('drop', (event) => {
-        event.preventDefault();
-        laneEl.removeClass('is-drop-target');
-        laneEl.removeClass('is-column-drop-before');
-        laneEl.removeClass('is-column-drop-after');
-
-        if (this.columnDragState) {
-          const insertionIndex =
-            this.columnDropInsertionIndex ??
-            this.getColumnInsertionIndex(laneEl, visibleIndex, event.clientX);
-          this.handleColumnDrop(insertionIndex);
-          return;
-        }
-
         if (!this.cardDragState) {
           return;
         }
 
-        const targetCard = (event.target as HTMLElement).closest('.kanban-next-card');
-        if (!targetCard) {
-          this.handleCardDrop(visibleColumn.id, null);
+        event.preventDefault();
+
+        if (this.cardDropTargetColumnId === visibleColumn.id) {
+          this.handleCardDrop(visibleColumn.id, this.cardDropTargetCardId);
+          return;
         }
+
+        const targetCard = (event.target as HTMLElement).closest('.kanban-next-card');
+        if (targetCard instanceof HTMLElement && targetCard.dataset.cardId) {
+          this.handleCardDrop(visibleColumn.id, targetCard.dataset.cardId);
+          return;
+        }
+
+        this.handleCardDrop(visibleColumn.id, null);
       });
 
       const laneHeader = laneEl.createDiv({ cls: 'kanban-next-lane-header' });
@@ -554,11 +933,12 @@ export class KanbanView extends TextFileView {
         () => {
           // Drag handled by native drag events.
         },
-        'kanban-next-column-drag-handle'
+        'kanban-next-column-drag-handle kanban-next-ghost-icon-button'
       );
 
       dragHandle.draggable = true;
       dragHandle.addEventListener('dragstart', (event) => {
+        this.clearCardDropIndicator();
         this.columnDragState = {
           sourceColumnId: visibleColumn.id,
         };
@@ -567,8 +947,10 @@ export class KanbanView extends TextFileView {
         event.dataTransfer?.setData('text/plain', visibleColumn.id);
         if (event.dataTransfer) {
           event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setDragImage(laneEl, 20, 20);
         }
 
+        this.lanesEl?.addClass('is-column-dragging');
         laneEl.addClass('is-dragging-column');
       });
 
@@ -576,6 +958,7 @@ export class KanbanView extends TextFileView {
         this.columnDragState = null;
         this.columnDropInsertionIndex = null;
         this.clearDropTargetStyles();
+        this.lanesEl?.removeClass('is-column-dragging');
         laneEl.removeClass('is-dragging-column');
       });
 
@@ -592,7 +975,9 @@ export class KanbanView extends TextFileView {
       });
       titleInput.hidden = true;
 
-      const countEl = titleWrap.createSpan({
+      const laneActions = laneHeader.createDiv({ cls: 'kanban-next-lane-actions' });
+
+      const countEl = laneActions.createSpan({
         cls: 'kanban-next-lane-count',
         text:
           snapshot.filter.query || snapshot.filter.tag
@@ -617,7 +1002,6 @@ export class KanbanView extends TextFileView {
 
         columnTitleEditInProgress = true;
         titleText.hidden = true;
-        countEl.hidden = true;
         titleInput.hidden = false;
         titleInput.value = visibleColumn.title;
 
@@ -635,7 +1019,6 @@ export class KanbanView extends TextFileView {
         columnTitleEditInProgress = false;
         titleInput.hidden = true;
         titleText.hidden = false;
-        countEl.hidden = false;
         titleInput.value = visibleColumn.title;
       };
 
@@ -683,13 +1066,18 @@ export class KanbanView extends TextFileView {
         commitColumnTitleEdit();
       });
 
-      const laneActions = laneHeader.createDiv({ cls: 'kanban-next-lane-actions' });
-
-      this.createIconButton(laneActions, 'ellipsis', 'Column actions', (event) => {
-        this.openColumnMenu(event, visibleColumn.id, visibleColumn.title, beginColumnTitleEdit);
-      });
+      this.createIconButton(
+        laneActions,
+        'ellipsis',
+        'Column actions',
+        (event) => {
+          this.openColumnMenu(event, visibleColumn.id, visibleColumn.title, beginColumnTitleEdit);
+        },
+        'kanban-next-ghost-icon-button'
+      );
 
       const cardsEl = laneEl.createDiv({ cls: 'kanban-next-cards' });
+      cardsEl.dataset.columnId = visibleColumn.id;
 
       cardsEl.addEventListener('dragover', (event) => {
         if (!this.cardDragState) {
@@ -697,7 +1085,7 @@ export class KanbanView extends TextFileView {
         }
 
         event.preventDefault();
-        cardsEl.addClass('is-drop-target');
+        this.updateCardDropIndicatorFromPointer(cardsEl, visibleColumn.id, event.clientY);
       });
 
       cardsEl.addEventListener('dragleave', (event) => {
@@ -705,8 +1093,7 @@ export class KanbanView extends TextFileView {
         if (target && cardsEl.contains(target)) {
           return;
         }
-
-        cardsEl.removeClass('is-drop-target');
+        this.clearCardDropIndicator();
       });
 
       cardsEl.addEventListener('drop', (event) => {
@@ -715,12 +1102,19 @@ export class KanbanView extends TextFileView {
         }
 
         event.preventDefault();
-        cardsEl.removeClass('is-drop-target');
+
+        if (this.cardDropTargetColumnId === visibleColumn.id) {
+          this.handleCardDrop(visibleColumn.id, this.cardDropTargetCardId);
+          return;
+        }
 
         const targetCard = (event.target as HTMLElement).closest('.kanban-next-card');
-        if (!targetCard) {
-          this.handleCardDrop(visibleColumn.id, null);
+        if (targetCard instanceof HTMLElement && targetCard.dataset.cardId) {
+          this.handleCardDrop(visibleColumn.id, targetCard.dataset.cardId);
+          return;
         }
+
+        this.handleCardDrop(visibleColumn.id, null);
       });
 
       visibleColumn.cards.forEach((card) => {
@@ -733,10 +1127,12 @@ export class KanbanView extends TextFileView {
 
         if (!isEditingCard) {
           cardEl.addEventListener('dragstart', (event) => {
+            this.clearCardDropIndicator();
             this.cardDragState = {
               cardId: card.id,
               sourceColumnId: visibleColumn.id,
             };
+            this.cardDragPreviewHeight = cardEl.getBoundingClientRect().height;
 
             event.dataTransfer?.setData('text/plain', card.id);
             if (event.dataTransfer) {
@@ -748,39 +1144,12 @@ export class KanbanView extends TextFileView {
 
           cardEl.addEventListener('dragend', () => {
             this.cardDragState = null;
+            this.cardDragPreviewHeight = 64;
+            this.clearCardDropIndicator();
             cardEl.removeClass('is-dragging');
             this.clearDropTargetStyles();
           });
 
-          cardEl.addEventListener('dragover', (event) => {
-            if (!this.cardDragState) {
-              return;
-            }
-
-            event.preventDefault();
-            event.stopPropagation();
-            cardEl.addClass('is-drop-target');
-          });
-
-          cardEl.addEventListener('dragleave', (event) => {
-            const target = event.relatedTarget as Node | null;
-            if (target && cardEl.contains(target)) {
-              return;
-            }
-
-            cardEl.removeClass('is-drop-target');
-          });
-
-          cardEl.addEventListener('drop', (event) => {
-            if (!this.cardDragState) {
-              return;
-            }
-
-            event.preventDefault();
-            event.stopPropagation();
-            cardEl.removeClass('is-drop-target');
-            this.handleCardDrop(visibleColumn.id, card.id);
-          });
         }
 
         if (isEditingCard) {
@@ -869,12 +1238,34 @@ export class KanbanView extends TextFileView {
             this.commitInlineCardEdit();
           });
         } else {
-          cardEl.createDiv({
+          const cardHeader = cardEl.createDiv({ cls: 'kanban-next-card-header' });
+
+          cardHeader.createDiv({
             cls: 'kanban-next-card-body',
             text: toEditableCardText({
               title: card.title,
               description: card.description,
             }),
+          });
+
+          const cardActions = cardHeader.createDiv({ cls: 'kanban-next-card-actions' });
+          const cardMenuButton = this.createIconButton(
+            cardActions,
+            'ellipsis',
+            'Card actions',
+            (event) => {
+              this.openCardMenu(event, visibleColumn.id, card.id);
+            },
+            'kanban-next-ghost-icon-button'
+          );
+
+          cardMenuButton.addEventListener('mousedown', (event) => {
+            event.stopPropagation();
+          });
+
+          cardMenuButton.addEventListener('dragstart', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
           });
 
           cardEl.addEventListener('click', () => {
@@ -1009,13 +1400,26 @@ export class KanbanView extends TextFileView {
       return;
     }
 
-    const parsed = parseClipboardList(clipboard);
-    if (parsed.length === 0) {
-      new Notice('No list items found in clipboard text.');
+    const cards = this.parseClipboardCards(clipboard);
+    if (cards.length === 0) {
       return;
     }
 
-    const cards = parsed.map<Card>((entry) => {
+    const inserted = this.store.insertCardsFromParsedLines(columnId, cards, position);
+    if (inserted > 0) {
+      this.schedulePersist();
+      new Notice(`Inserted ${inserted} cards.`);
+    }
+  }
+
+  private parseClipboardCards(clipboard: string): Card[] {
+    const parsed = parseClipboardList(clipboard);
+    if (parsed.length === 0) {
+      new Notice('No list items found in clipboard text.');
+      return [];
+    }
+
+    return parsed.map<Card>((entry) => {
       return normalizeCard({
         id: createId('card'),
         title: entry.title,
@@ -1024,12 +1428,6 @@ export class KanbanView extends TextFileView {
         dueDate: null,
       });
     });
-
-    const inserted = this.store.insertCardsFromParsedLines(columnId, cards, position);
-    if (inserted > 0) {
-      this.schedulePersist();
-      new Notice(`Inserted ${inserted} cards.`);
-    }
   }
 
   private async readClipboardText(): Promise<string | null> {
@@ -1134,23 +1532,330 @@ export class KanbanView extends TextFileView {
     menu.showAtMouseEvent(event);
   }
 
-  private getColumnInsertionIndex(
-    laneEl: HTMLElement,
-    laneIndex: number,
-    pointerClientX: number
-  ): number {
-    const rect = laneEl.getBoundingClientRect();
-    const midpoint = rect.left + rect.width / 2;
-    return pointerClientX < midpoint ? laneIndex : laneIndex + 1;
+  private openCardMenu(event: MouseEvent, columnId: string, cardId: string): void {
+    const menu = new Menu();
+
+    menu.addItem((item) => {
+      item
+        .setTitle('New note from card')
+        .setIcon('file-plus-2')
+        .onClick(() => {
+          void this.createNoteFromCard(columnId, cardId);
+        });
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle('Copy link to card')
+        .setIcon('link')
+        .onClick(() => {
+          void this.copyCardLinkToClipboard(cardId);
+        });
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle('Duplicate card')
+        .setIcon('copy-plus')
+        .onClick(() => {
+          this.duplicateCard(columnId, cardId);
+        });
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle('Insert card before')
+        .setIcon('list-start')
+        .onClick(() => {
+          void this.insertCardsAroundCard(columnId, cardId, 'before');
+        });
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle('Insert card after')
+        .setIcon('list-end')
+        .onClick(() => {
+          void this.insertCardsAroundCard(columnId, cardId, 'after');
+        });
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle('Move to top')
+        .setIcon('arrow-up-to-line')
+        .onClick(() => {
+          this.moveCardToBoundary(columnId, cardId, 'top');
+        });
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle('Move to bottom')
+        .setIcon('arrow-down-to-line')
+        .onClick(() => {
+          this.moveCardToBoundary(columnId, cardId, 'bottom');
+        });
+    });
+
+    menu.addItem((item) => {
+      item
+        .setTitle('Delete card')
+        .setIcon('trash-2')
+        .onClick(() => {
+          void this.deleteCardWithConfirmation(columnId, cardId);
+        });
+    });
+
+    menu.showAtMouseEvent(event);
+  }
+
+  private getCardContext(
+    columnId: string,
+    cardId: string
+  ): {
+    column: Column;
+    card: Card;
+    cardIndex: number;
+  } | null {
+    if (!this.store) {
+      return null;
+    }
+
+    const board = this.store.getBoard();
+    const column = board.columns.find((entry) => entry.id === columnId);
+    if (!column) {
+      return null;
+    }
+
+    const cardIndex = column.cards.findIndex((entry) => entry.id === cardId);
+    if (cardIndex < 0) {
+      return null;
+    }
+
+    const card = column.cards[cardIndex];
+    if (!card) {
+      return null;
+    }
+
+    return {
+      column,
+      card,
+      cardIndex,
+    };
+  }
+
+  private async createNoteFromCard(columnId: string, cardId: string): Promise<void> {
+    if (!this.store || !this.file) {
+      return;
+    }
+
+    const context = this.getCardContext(columnId, cardId);
+    if (!context) {
+      return;
+    }
+
+    const baseName = this.sanitizeNoteBaseName(context.card.title) || 'Untitled card note';
+    const notePath = this.getNextNotePath(baseName);
+    const cardLink = this.buildCardWikiLink(cardId);
+    const noteContent = this.buildCardNoteContent(context.card, cardLink);
+
+    try {
+      const created = await this.app.vault.create(notePath, noteContent);
+      const noteLink = `[[${created.basename}]]`;
+
+      if (!context.card.description.includes(noteLink)) {
+        this.store.updateCard(columnId, cardId, (card) => ({
+          ...card,
+          description: this.appendLine(card.description, noteLink),
+        }));
+        this.schedulePersist();
+      }
+
+      new Notice(`Created note "${created.basename}".`);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : 'Could not create note from card.');
+    }
+  }
+
+  private async copyCardLinkToClipboard(cardId: string): Promise<void> {
+    const link = this.buildCardWikiLink(cardId);
+    if (!link) {
+      new Notice('Board file unavailable.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(link);
+      new Notice('Card link copied.');
+    } catch {
+      new Notice('Could not copy card link to clipboard.');
+    }
+  }
+
+  private duplicateCard(columnId: string, cardId: string): void {
+    if (!this.store) {
+      return;
+    }
+
+    const context = this.getCardContext(columnId, cardId);
+    if (!context) {
+      return;
+    }
+
+    const duplicated = normalizeCard({
+      id: createId('card'),
+      title: context.card.title,
+      description: context.card.description,
+      checked: context.card.checked,
+      dueDate: context.card.dueDate,
+    });
+
+    const inserted = this.store.insertCardsAt(columnId, context.cardIndex + 1, [duplicated]);
+    if (inserted > 0) {
+      this.schedulePersist();
+      new Notice('Card duplicated.');
+    }
+  }
+
+  private async insertCardsAroundCard(
+    columnId: string,
+    cardId: string,
+    position: 'before' | 'after'
+  ): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const context = this.getCardContext(columnId, cardId);
+    if (!context) {
+      return;
+    }
+
+    const clipboard = await this.readClipboardText();
+    if (!clipboard) {
+      return;
+    }
+
+    const cards = this.parseClipboardCards(clipboard);
+    if (cards.length === 0) {
+      return;
+    }
+
+    const insertIndex = position === 'before' ? context.cardIndex : context.cardIndex + 1;
+    const inserted = this.store.insertCardsAt(columnId, insertIndex, cards);
+    if (inserted > 0) {
+      this.schedulePersist();
+      new Notice(`Inserted ${inserted} cards.`);
+    }
+  }
+
+  private moveCardToBoundary(columnId: string, cardId: string, boundary: 'top' | 'bottom'): void {
+    if (!this.store) {
+      return;
+    }
+
+    const context = this.getCardContext(columnId, cardId);
+    if (!context) {
+      return;
+    }
+
+    if (boundary === 'top' && context.cardIndex === 0) {
+      return;
+    }
+
+    if (boundary === 'bottom' && context.cardIndex === context.column.cards.length - 1) {
+      return;
+    }
+
+    const targetIndex = boundary === 'top' ? 0 : context.column.cards.length;
+    this.store.moveCard(columnId, cardId, columnId, targetIndex);
+    this.schedulePersist();
+  }
+
+  private async deleteCardWithConfirmation(columnId: string, cardId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const context = this.getCardContext(columnId, cardId);
+    if (!context) {
+      return;
+    }
+
+    const confirmed = await openConfirmModal(this.app, {
+      title: 'Delete card',
+      message: `Delete "${context.card.title}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    this.store.deleteCard(columnId, cardId);
+    this.schedulePersist();
+  }
+
+  private buildCardWikiLink(cardId: string): string {
+    if (!this.file) {
+      return '';
+    }
+
+    return `[[${this.file.path.replace(/\.md$/i, '')}#^${cardId}]]`;
+  }
+
+  private buildCardNoteContent(card: Card, cardLink: string): string {
+    const description = card.description.trim();
+    const lines = [`# ${card.title}`, '', `Source: ${cardLink}`, ''];
+
+    if (description) {
+      lines.push(description, '');
+    }
+
+    return `${lines.join('\n').trimEnd()}\n`;
+  }
+
+  private appendLine(value: string, line: string): string {
+    const trimmed = value.trimEnd();
+    return trimmed ? `${trimmed}\n${line}` : line;
+  }
+
+  private sanitizeNoteBaseName(raw: string): string {
+    return raw
+      .replace(/[\\/:*?"<>|[\]]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private getNextNotePath(baseName: string): string {
+    const parentPath = this.file?.parent?.path || '';
+    const prefix = parentPath ? `${parentPath}/` : '';
+
+    let index = 0;
+    while (true) {
+      const candidateName = index === 0 ? baseName : `${baseName} ${index}`;
+      const candidatePath = normalizePath(`${prefix}${candidateName}.md`);
+      if (!this.app.vault.getAbstractFileByPath(candidatePath)) {
+        return candidatePath;
+      }
+
+      index += 1;
+    }
   }
 
   private setColumnDropIndicator(laneEl: HTMLElement, side: 'before' | 'after'): void {
+    this.clearColumnDropIndicators();
+
+    laneEl.addClass(side === 'before' ? 'is-column-drop-before' : 'is-column-drop-after');
+  }
+
+  private clearColumnDropIndicators(): void {
     this.rootEl?.querySelectorAll('.is-column-drop-before, .is-column-drop-after').forEach((node) => {
       node.removeClass('is-column-drop-before');
       node.removeClass('is-column-drop-after');
     });
-
-    laneEl.addClass(side === 'before' ? 'is-column-drop-before' : 'is-column-drop-after');
   }
 
   private handleCardDrop(targetColumnId: string, targetCardId: string | null): void {
@@ -1177,6 +1882,8 @@ export class KanbanView extends TextFileView {
     );
 
     this.cardDragState = null;
+    this.cardDragPreviewHeight = 64;
+    this.clearCardDropIndicator();
     this.schedulePersist();
   }
 
@@ -1203,6 +1910,7 @@ export class KanbanView extends TextFileView {
       this.columnDragState = null;
       this.columnDropInsertionIndex = null;
       this.clearDropTargetStyles();
+      this.lanesEl?.removeClass('is-column-dragging');
       return;
     }
 
@@ -1210,6 +1918,7 @@ export class KanbanView extends TextFileView {
     this.columnDragState = null;
     this.columnDropInsertionIndex = null;
     this.clearDropTargetStyles();
+    this.lanesEl?.removeClass('is-column-dragging');
     this.schedulePersist();
   }
 
@@ -1322,6 +2031,7 @@ export class KanbanView extends TextFileView {
       node.removeClass('is-column-drop-before');
       node.removeClass('is-column-drop-after');
     });
+    this.clearCardDropIndicator();
   }
 
   private renderError(message: string): void {

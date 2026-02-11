@@ -54,6 +54,7 @@ describe('board parser + serializer', () => {
     const first = serializeBoardMarkdown(parseBoardMarkdown(fixture));
     const second = serializeBoardMarkdown(parseBoardMarkdown(first));
 
+    expect(first).toContain('  ^card-1');
     expect(first).toBe(second);
   });
 
@@ -110,5 +111,28 @@ boardTitle: Not a board
 `;
 
     expect(() => parseBoardMarkdown(raw)).toThrow('kanban: true');
+  });
+
+  it('ignores block anchor lines inside card descriptions', () => {
+    const raw = `---
+kanban: true
+kanbanVersion: 1
+boardTitle: Anchors
+density: normal
+columns:
+  - id: lane
+    title: Lane
+    wipLimit: null
+---
+
+## [lane] Lane
+
+- [ ] [card-1] Task
+  ^card-1
+  Keep this line
+`;
+
+    const board = parseBoardMarkdown(raw);
+    expect(board.columns[0].cards[0].description).toBe('Keep this line');
   });
 });
