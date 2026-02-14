@@ -1,4 +1,4 @@
-import { Menu, Notice, TFile, TextFileView, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
+import { Menu, Notice, Platform, TFile, TextFileView, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
 
 import KanbanNextPlugin from '../main';
 import { openConfirmModal } from '../modals/ConfirmModal';
@@ -214,6 +214,31 @@ export class KanbanView extends TextFileView {
         this.setActivePopover(null);
       }
     });
+
+    this.registerDomEvent(
+      window,
+      'keydown',
+      (event) => {
+        if (!this.editingCard || !this.rootEl) {
+          return;
+        }
+
+        const target = event.target;
+        if (!(target instanceof Node) || !this.rootEl.contains(target)) {
+          return;
+        }
+
+        if (!this.isInlineCardSubmitShortcut(event)) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        this.commitInlineCardEdit();
+      },
+      true
+    );
 
     this.registerEvent(
       this.app.vault.on('rename', (file) => {
@@ -460,7 +485,7 @@ export class KanbanView extends TextFileView {
       () => {
         this.togglePopover('search');
       },
-      'kanban-next-icon-button kanban-next-plain-icon-button'
+      'kanban-next-ghost-icon-button'
     );
 
     const searchPopover = searchControlEl.createDiv({ cls: 'kanban-next-toolbar-popover' });
@@ -484,7 +509,7 @@ export class KanbanView extends TextFileView {
       () => {
         this.togglePopover('filter');
       },
-      'kanban-next-icon-button kanban-next-plain-icon-button'
+      'kanban-next-ghost-icon-button'
     );
 
     const filterPopover = filterControlEl.createDiv({ cls: 'kanban-next-toolbar-popover' });
@@ -518,14 +543,14 @@ export class KanbanView extends TextFileView {
       'plus-circle',
       'Add column',
       async () => this.promptAddColumn(),
-      'kanban-next-icon-button kanban-next-plain-icon-button'
+      'kanban-next-ghost-icon-button'
     );
     this.createIconButton(
       toolbarEl,
       'settings',
       'Board settings',
       async () => this.openBoardSettings(),
-      'kanban-next-icon-button kanban-next-plain-icon-button'
+      'kanban-next-ghost-icon-button'
     );
 
     const lanesEl = boardEl.createDiv({ cls: 'kanban-next-lane-scroller' });
@@ -1291,7 +1316,7 @@ export class KanbanView extends TextFileView {
 
           cardEl.createSpan({
             cls: 'kanban-next-card-shortcut-hint',
-            text: 'Ctrl+Enter to save',
+            text: Platform.isMacOS ? 'Cmd+Enter to finish' : 'Ctrl+Enter to finish',
           });
 
           let counterEl: HTMLSpanElement | null = null;
@@ -1355,7 +1380,7 @@ export class KanbanView extends TextFileView {
               return;
             }
 
-            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+            if (this.isInlineCardSubmitShortcut(event)) {
               event.preventDefault();
               this.commitInlineCardEdit();
             }
@@ -1505,6 +1530,37 @@ export class KanbanView extends TextFileView {
 
   private countCharacters(value: string): number {
     return value.length;
+  }
+
+  private isInlineCardSubmitShortcut(event: KeyboardEvent): boolean {
+    const key = (event.key || '').toLowerCase();
+    const code = (event.code || '').toLowerCase();
+    const keyCode = (event as KeyboardEvent & { keyCode?: number; which?: number }).keyCode
+      ?? (event as KeyboardEvent & { keyCode?: number; which?: number }).which
+      ?? 0;
+    const isEnterKey =
+      key === 'enter' ||
+      key === 'numpadenter' ||
+      key === 'return' ||
+      code === 'enter' ||
+      code === 'numpadenter' ||
+      keyCode === 13;
+
+    if (!isEnterKey) {
+      return false;
+    }
+
+    const hasMeta =
+      event.metaKey || (typeof event.getModifierState === 'function' && event.getModifierState('Meta'));
+    const hasCtrl =
+      event.ctrlKey ||
+      (typeof event.getModifierState === 'function' && event.getModifierState('Control'));
+
+    if (Platform.isMacOS) {
+      return hasMeta || hasCtrl;
+    }
+
+    return hasCtrl || hasMeta;
   }
 
   private clampCardText(value: string): string {

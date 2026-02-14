@@ -6,14 +6,12 @@ export interface KanbanNextSettings {
   defaultDensity: 'normal' | 'compact';
   saveDebounceMs: number;
   saveMaxDelayMs: number;
-  enableNativeEditorFallback: boolean;
 }
 
 export const DEFAULT_SETTINGS: KanbanNextSettings = {
   defaultDensity: 'normal',
   saveDebounceMs: 300,
   saveMaxDelayMs: 1500,
-  enableNativeEditorFallback: true,
 };
 
 export class KanbanNextSettingTab extends PluginSettingTab {
@@ -78,14 +76,5 @@ export class KanbanNextSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
-      .setName('Allow fallback card editor')
-      .setDesc('When native editor cannot be mounted, use a textarea fallback instead.')
-      .addToggle((toggle) => {
-        toggle.setValue(this.plugin.settings.enableNativeEditorFallback).onChange(async (value) => {
-          this.plugin.settings.enableNativeEditorFallback = value;
-          await this.plugin.saveSettings();
-        });
-      });
   }
 }

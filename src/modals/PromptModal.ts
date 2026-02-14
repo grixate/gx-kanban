@@ -26,6 +26,8 @@ class PromptModal extends Modal {
     contentEl.empty();
 
     this.modalEl.addClass('kanban-next-prompt-modal');
+    this.modalEl.toggleClass('kanban-next-prompt-modal--singleline', !this.options.multiline);
+    this.modalEl.toggleClass('kanban-next-prompt-modal--multiline', Boolean(this.options.multiline));
     contentEl.addClass('kanban-next-prompt-content');
 
     contentEl.createEl('h2', { text: this.options.title });
