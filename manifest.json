@@ -3,7 +3,7 @@
   "name": "gx-kanban",
   "version": "1.0.1",
   "minAppVersion": "1.5.0",
-  "description": "Stable markdown-native Kanban board for Obsidian.",
+  "description": "Stable markdown-native Kanban board.",
   "author": "grixate",
   "authorUrl": "https://github.com/grixate",
   "isDesktopOnly": false
