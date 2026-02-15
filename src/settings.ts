@@ -26,7 +26,7 @@ export class KanbanNextSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Kanban Next settings' });
+    containerEl.createEl('h2', { text: 'gx-kanban settings' });
 
     new Setting(containerEl)
       .setName('Default density for new boards')

@@ -167,7 +167,7 @@ export class KanbanView extends TextFileView {
       } else if (this.initialized) {
         this.pendingSavePayload = null;
         this.saveQueue.clearPending();
-        new Notice('Kanban Next reloaded after an external file change.');
+        new Notice('gx-kanban reloaded after an external file change.');
       }
     }
 
@@ -1535,16 +1535,12 @@ export class KanbanView extends TextFileView {
   private isInlineCardSubmitShortcut(event: KeyboardEvent): boolean {
     const key = (event.key || '').toLowerCase();
     const code = (event.code || '').toLowerCase();
-    const keyCode = (event as KeyboardEvent & { keyCode?: number; which?: number }).keyCode
-      ?? (event as KeyboardEvent & { keyCode?: number; which?: number }).which
-      ?? 0;
     const isEnterKey =
       key === 'enter' ||
       key === 'numpadenter' ||
       key === 'return' ||
       code === 'enter' ||
-      code === 'numpadenter' ||
-      keyCode === 13;
+      code === 'numpadenter';
 
     if (!isEnterKey) {
       return false;

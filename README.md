@@ -1,6 +1,6 @@
-# Kanban Next (Obsidian Plugin)
+# gx-kanban (Obsidian Plugin)
 
-Kanban Next is a markdown-native Kanban board plugin for Obsidian focused on stability, deterministic file writes, and fast day-to-day workflow.
+gx-kanban is a markdown-native Kanban board plugin for Obsidian focused on stability, deterministic file writes, and fast day-to-day workflow.
 
 ## MVP Features
 
@@ -16,9 +16,9 @@ Kanban Next is a markdown-native Kanban board plugin for Obsidian focused on sta
 
 ## Create a Board
 
-- Command palette: `Kanban Next: Create board`
-- Folder context menu: `New Kanban Next board`
-- Open an existing board file and run: `Kanban Next: Toggle board/markdown view`
+- Command palette: `gx-kanban: Create board`
+- Folder context menu: `New gx-kanban board`
+- Open an existing board file and run: `gx-kanban: Toggle board/markdown view`
 
 ## Data Format (v1)
 
@@ -66,11 +66,11 @@ columns:
 
 ## Commands
 
-- `Kanban Next: Create board`
-- `Kanban Next: Toggle board/markdown view`
-- `Kanban Next: Add column`
-- `Kanban Next: Add card to first column`
-- `Kanban Next: Open board settings`
+- `gx-kanban: Create board`
+- `gx-kanban: Toggle board/markdown view`
+- `gx-kanban: Add column`
+- `gx-kanban: Add card to first column`
+- `gx-kanban: Open board settings`
 
 ## Development
 

@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-kanban-next",
-  "version": "1.0.0",
+  "name": "gx-kanban",
+  "version": "1.0.1",
   "description": "Obsidian-native Kanban board plugin",
   "main": "main.js",
   "type": "module",

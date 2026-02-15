@@ -108,7 +108,7 @@ export default class KanbanNextPlugin extends Plugin {
     const targetFolder = folder || activeFile?.parent || this.app.vault.getRoot();
 
     try {
-      const newPath = this.getNextBoardPath(targetFolder, 'Untitled Kanban Next');
+      const newPath = this.getNextBoardPath(targetFolder, 'Untitled gx-kanban');
       const created = await this.app.vault.create(newPath, '');
 
       const board = createDefaultBoard(created.basename);
@@ -119,8 +119,8 @@ export default class KanbanNextPlugin extends Plugin {
       const leaf = this.app.workspace.getLeaf(true);
       await this.setKanbanView(leaf, created);
     } catch (error) {
-      console.error('Kanban Next: failed to create board', error);
-      new Notice('Kanban Next could not create a board file. Check console for details.');
+      console.error('gx-kanban: failed to create board', error);
+      new Notice('gx-kanban could not create a board file. Check console for details.');
     }
   }
 
@@ -246,7 +246,7 @@ export default class KanbanNextPlugin extends Plugin {
         if (file instanceof TFolder) {
           menu.addItem((item) => {
             item
-              .setTitle('New Kanban Next board')
+              .setTitle('New gx-kanban board')
               .setIcon(KANBAN_NEXT_ICON)
               .setSection('action-primary')
               .onClick(() => {
@@ -259,7 +259,7 @@ export default class KanbanNextPlugin extends Plugin {
         if (file instanceof TFile && this.isKanbanFile(file) && leaf) {
           menu.addItem((item) => {
             item
-              .setTitle('Open as Kanban Next board')
+              .setTitle('Open as gx-kanban board')
               .setIcon(KANBAN_NEXT_ICON)
               .setSection('pane')
               .onClick(() => {
